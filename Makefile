@@ -1,13 +1,13 @@
 CC         := emcc
 TARGET     := triangle
-SRC        := src/main.c src/asset.c src/framebuffer.c src/pass.c src/capture.c src/sh.c src/sg.c src/texture.c src/mesh.c src/ground.c src/shadow.c src/probe_grid.c src/tri_grid.c src/bloom.c src/hdr_env.c src/instanced_mesh.c src/cgltf_impl.c src/stb_image_impl.c
+SRC        := src/main.c src/game.c src/asset.c src/framebuffer.c src/pass.c src/capture.c src/sh.c src/sg.c src/texture.c src/mesh.c src/ground.c src/shadow.c src/probe_grid.c src/tri_grid.c src/bloom.c src/hdr_env.c src/instanced_mesh.c src/cgltf_impl.c src/stb_image_impl.c
 SHELL_HTML := shell/index.html
 OUT        := $(TARGET).html
 
 CFLAGS  := -std=gnu11 -O3 -Wall -Wextra -Wno-unused-parameter -Ithird_party -Isrc
 
 LDFLAGS := \
-    -sUSE_GLFW=3 \
+    -sEXPORTED_FUNCTIONS='["_main","_game_mouse_move","_game_set_pointer_locked"]' -sEXPORTED_RUNTIME_METHODS='["ccall"]' -sUSE_GLFW=3 \
     -sFULL_ES3=1 \
     -sMIN_WEBGL_VERSION=2 \
     -sMAX_WEBGL_VERSION=2 \
