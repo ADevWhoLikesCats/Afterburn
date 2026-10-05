@@ -12,6 +12,7 @@ void game_render(int w, int h);
 Mesh* game_jet_meshes(void);
 int   game_jet_mesh_count(void);
 vec3  game_jet_position(void);
+vec3 game_probe_grid_offset(void);
 vec3 game_camera_pos(void);
 vec3 game_camera_target(void);
 int  game_ready(void);

@@ -21,6 +21,7 @@ typedef struct {
 } Aircraft;
 
 static Aircraft g_jet;
+static vec3     g_probe_grid_offset = {0,0,0};
 static mat4     g_jet_base_transform;
 static Model    g_jet_model;
 static int      g_jet_loaded = 0;
@@ -144,6 +145,9 @@ void game_init(void) {
 
     g_jet_loaded = 1;
     printf("[game] jet loaded: length=%.2f\n", g_jet.length);
+    g_probe_grid_offset = v3_sub(g_jet.position, v3(0.0f, 2.0f, 0.0f));
+    printf("[game] probe grid offset initialized to (%.1f, %.1f, %.1f)\n",
+           g_probe_grid_offset.x, g_probe_grid_offset.y, g_probe_grid_offset.z);
 }
 
 void game_update(float dt) {
@@ -211,6 +215,11 @@ void game_update(float dt) {
     g_jet.position = v3_add(g_jet.position,
                             v3_scale(g_jet.forward, g_jet.speed * dt));
 
+    /* Keep the probe grid centered on the jet. The bake itself is
+       local to the grid, so we only slide the world-to-grid
+       mapping by the same amount. Reflections stay stable. */
+    g_probe_grid_offset = v3_sub(g_jet.position, v3(0.0f, 2.0f, 0.0f));
+
     /* --- Chase camera --- */
     float speed_frac = clampf((g_jet.speed - g_jet.min_speed)
                               / (g_jet.max_speed - g_jet.min_speed), 0.0f, 1.0f);
@@ -257,6 +266,7 @@ Mesh* game_jet_meshes(void)    { return g_jet_model.meshes; }
 int   game_jet_mesh_count(void){ return g_jet_loaded ? g_jet_model.count : 0; }
 vec3  game_jet_position(void)  { return g_jet.position; }
 
+vec3 game_probe_grid_offset(void) { return g_probe_grid_offset; }
 vec3 game_camera_pos(void)    { return g_cam_pos; }
 vec3 game_camera_target(void) { return g_cam_target; }
 int  game_ready(void)         { return g_jet_loaded; }

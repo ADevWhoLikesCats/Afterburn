@@ -540,8 +540,17 @@ static void draw_car_into_fb(int w, int h, vec3 cam) {
     glUniform1i(u_shadowmap, 8);
     glUniform1i(u_shadowenabled, 1);
 
-    glUniform3f(u_scenegridmin, g_probes.grid_min.x, g_probes.grid_min.y, g_probes.grid_min.z);
-    glUniform3f(u_scenegridmax, g_probes.grid_max.x, g_probes.grid_max.y, g_probes.grid_max.z);
+    {
+        vec3 off = game_probe_grid_offset();
+        glUniform3f(u_scenegridmin,
+                    g_probes.grid_min.x + off.x,
+                    g_probes.grid_min.y + off.y,
+                    g_probes.grid_min.z + off.z);
+        glUniform3f(u_scenegridmax,
+                    g_probes.grid_max.x + off.x,
+                    g_probes.grid_max.y + off.y,
+                    g_probes.grid_max.z + off.z);
+    }
 
     glActiveTexture(GL_TEXTURE9);
     glBindTexture(GL_TEXTURE_2D, g_probes.fb.color);
@@ -748,6 +757,7 @@ static void frame(void) {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, g_hdr_env.tex);
         pass_set_i32(&g_sky_pass, "uHDRI", 0);
+        pass_set_i32(&g_sky_pass, "uHDRIValid", g_hdr_env.valid ? 1 : 0);
 
         vec3 sky_up = v3(0,1,0);
         mat4 sky_view = m4_look_at(cam, cam_target, sky_up);
