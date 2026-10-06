@@ -721,7 +721,7 @@ static void frame(void) {
         float internal_speed = game_jet_speed();
         float altitude       = game_jet_position().y;
         float throttle       = game_jet_throttle();
-        float spd_kts = internal_speed * 1.944f;
+        float spd_kts = internal_speed * 1.944f * 5.0f;  /* wu/s -> m/s -> kts */
         float alt_ft  = altitude * 3.281f;
         float mach    = internal_speed / 340.0f;
         hud_update(spd_kts, alt_ft, mach, throttle, 6, 0, 0);

@@ -5,19 +5,41 @@
 #include <emscripten/html5.h>
 
 typedef struct {
-    vec3  position;
+    /* Kinematics */
+    vec3  position;      /* world units (1 unit = 5 m) */
+    vec3  velocity;      /* world units / sec */
     vec3  forward;
     vec3  up;
     vec3  right;
-    float speed;
-    float length;
-    float min_speed;
-    float max_speed;
-    float accel;
-    float pitch_rate;   /* rad/sec at full mouse input */
-    float roll_rate;    /* rad/sec at full mouse input */
-    float rudder_rate;  /* rad/sec at full rudder key */
-    float bank_to_yaw;  /* extra yaw coupling from bank, per rad of bank */
+
+    /* Angular state (body-frame) */
+    vec3  angular_velocity;   /* rad/sec: x=pitch, y=yaw, z=roll (body axes) */
+
+    /* Player input */
+    float throttle;           /* 0..1, persistent */
+    float pitch_input;        /* -1..1, smoothed */
+    float roll_input;         /* -1..1, smoothed */
+    float yaw_input;          /* -1..1, smoothed */
+
+    /* Physical constants (real-world, meters/seconds/kg) */
+    float mass;               /* kg */
+    float wing_area;          /* m^2 */
+    float max_thrust;         /* N */
+    float max_speed_ms;       /* m/s */
+    float min_speed_ms;       /* m/s */
+    float stall_aoa_rad;      /* radians */
+    float cl_slope;           /* per radian */
+    float cd0;                /* zero-lift drag coefficient */
+    float cdi;                /* induced drag coefficient */
+    float pitch_inertia;      /* kg*m^2 — controls how fast pitch ramps */
+    float roll_inertia;
+    float yaw_inertia;
+
+    /* Derived / cached for other systems */
+    float speed;              /* world units/sec, cached from velocity */
+    float aoa_rad;            /* angle of attack, current */
+    float g_load;             /* current g force */
+    float length;             /* world units, aircraft length */
 } Aircraft;
 
 static Aircraft g_jet;
@@ -127,22 +149,33 @@ void game_init(void) {
         g_jet_model.meshes[i].model = jet_transform;
     }
 
-    g_jet.length       = 3.0f;
-    g_jet.min_speed    = g_jet.length * 2.5f;
-    g_jet.max_speed    = g_jet.length * 14.0f;
-    g_jet.accel        = g_jet.length * 6.0f;
+    /* Real-world F-16-ish constants. 1 world unit = 5 m. */
+    g_jet.length = 3.0f;                       /* world units */
+    g_jet.mass              = 12000.0f;         /* kg */
+    g_jet.wing_area         = 28.0f;            /* m^2 */
+    g_jet.max_thrust        = 130000.0f;        /* N (with afterburner) */
+    g_jet.max_speed_ms      = 900.0f;   /* ~Mach 3 at altitude */           /* m/s */
+    g_jet.min_speed_ms      = 80.0f;            /* m/s — below this, stall */
+    g_jet.stall_aoa_rad     = 16.0f * (3.14159265f / 180.0f);
+    g_jet.cl_slope          = 4.5f;             /* per radian */
+    g_jet.cd0               = 0.02f;
+    g_jet.cdi               = 0.12f;
+    g_jet.pitch_inertia     = 80000.0f;
+    g_jet.roll_inertia      = 20000.0f;
+    g_jet.yaw_inertia       = 120000.0f;
+    g_jet.throttle          = 0.7f;
 
-    /* Full-deflection rates */
-    g_jet.pitch_rate   = 70.0f  * (3.14159265f / 180.0f);
-    g_jet.roll_rate    = 150.0f * (3.14159265f / 180.0f);
-    g_jet.rudder_rate  = 45.0f  * (3.14159265f / 180.0f);
-    g_jet.bank_to_yaw  = 1.2f;
+    /* Spawn state: level forward, velocity along forward. */
+    g_jet.position = v3(0.0f, 0.5f, 0.0f);       /* on the runway */
+    g_jet.forward  = v3(1.0f, 0.0f, 0.0f);        /* nose along +X (aero) */
+    g_jet.up       = v3(0.0f, 1.0f, 0.0f);        /* wings level */
+    g_jet.right    = v3(0.0f, 0.0f, 1.0f);        /* right wing +Z (aero) */
 
-    g_jet.position = v3(0.0f, 4.0f, 0.0f);
-    g_jet.forward  = v3(0.0f, 0.0f, -1.0f);
-    g_jet.up       = v3(0.0f, 1.0f, 0.0f);
-    g_jet.right    = v3(1.0f, 0.0f, 0.0f);
-    g_jet.speed    = g_jet.length * 6.0f;
+    g_jet.speed    = 0.0f;                       /* m/s — start parked */
+    g_jet.velocity = v3(0, 0, 0);
+    g_jet.angular_velocity = v3(0, 0, 0);
+    g_jet.aoa_rad  = 0.0f;
+    g_jet.g_load   = 1.0f;
 
     g_jet_loaded = 1;
     compute_wingtips();
@@ -155,102 +188,291 @@ void game_init(void) {
 void game_update(float dt) {
     if (!g_jet_loaded || dt <= 0.0f) return;
 
-    /* --- Convert mouse deltas to per-frame axis values --- */
-    /* A single frame's mouse motion produces a small pitch/roll pulse.
-       Held motion (mouse continuously moved in a direction) gives continuous
-       rotation, which feels like a flight stick. */
-    float pitch_mouse = (float)(-g_mouse_dy) * MOUSE_PITCH_SENS;   /* up = nose up */
-    float roll_mouse  = (float)(-g_mouse_dx) * MOUSE_ROLL_SENS;    /* right = roll right */
+    /* Clamp dt so a long stall doesn't produce a huge integration step. */
+    if (dt > 0.05f) dt = 0.05f;
+
+    const float WORLD_UNITS_PER_METER = 1.0f / 5.0f;   /* 1 unit = 5 m */
+    const float METERS_PER_WORLD_UNIT = 5.0f;
+    const float GRAVITY_MS2 = 9.81f;
+
+    /* ---------- 1. Read player input ---------- */
+    float pitch_mouse = (float)(-g_mouse_dy) * MOUSE_PITCH_SENS;
+    float roll_mouse  = (float)(-g_mouse_dx) * MOUSE_ROLL_SENS;
     g_mouse_dx = g_mouse_dy = 0.0;
 
-    /* Clamp per-frame contributions so a violent mouse flick can't snap the jet. */
     pitch_mouse = clampf(pitch_mouse, -0.5f, 0.5f);
     roll_mouse  = clampf(roll_mouse,  -0.5f, 0.5f);
 
-    /* Smooth the axis a bit so a single frame of mouse input produces a
-       smooth rotation instead of an instant snap. */
     g_pitch_axis = g_pitch_axis * 0.55f + pitch_mouse * 0.45f;
     g_roll_axis  = g_roll_axis  * 0.55f + roll_mouse  * 0.45f;
 
-    /* --- Pitch (mouse vertical) --- */
-    float pitch = g_pitch_axis * g_jet.pitch_rate * dt * 4.0f;
-    g_jet.forward = rotate_axis(g_jet.forward, g_jet.right, pitch);
-    g_jet.up      = rotate_axis(g_jet.up,      g_jet.right, pitch);
+    /* Normalize to -1..1. The mouse axis is per-frame pulses; scale up. */
+    float pitch_in = clampf(g_pitch_axis * 12.0f, -1.0f, 1.0f);
+    float roll_in  = clampf(g_roll_axis  * 12.0f, -1.0f, 1.0f);
+    float yaw_in   = (float)(g_key_d - g_key_a);  /* D = right */
 
-    /* --- Roll (mouse horizontal) --- */
-    float roll = g_roll_axis * g_jet.roll_rate * dt * 4.0f;
-    g_jet.up    = rotate_axis(g_jet.up,    g_jet.forward, roll);
-    g_jet.right = rotate_axis(g_jet.right, g_jet.forward, roll);
+    /* Throttle: W increases, S decreases. Persistent. */
+    if (g_key_w) g_jet.throttle += 0.6f * dt;
+    if (g_key_s) g_jet.throttle -= 0.6f * dt;
+    g_jet.throttle = clampf(g_jet.throttle, 0.0f, 1.0f);
 
-    /* --- Rudder (A/D, around world up) --- */
-    float rudder_in = (float)(g_key_a - g_key_d);
-    float rudder = rudder_in * g_jet.rudder_rate * dt;
-    g_jet.forward = rotate_axis(g_jet.forward, v3(0,1,0), rudder);
-    g_jet.up      = rotate_axis(g_jet.up,      v3(0,1,0), rudder);
-    g_jet.right   = rotate_axis(g_jet.right,   v3(0,1,0), rudder);
+    /* ---------- 1b. Ground mode / auto-rotate ---------- */
+    /* "On ground" = close to the runway plane AND not climbing fast.
+       Y=2 wu = 10 m. Above that we're flying. */
+    int on_ground = (g_jet.position.y < 2.0f && g_jet.velocity.y < 2.0f);
+    if (on_ground) {
+        float speed_ms_g = v3_len(g_jet.velocity) * METERS_PER_WORLD_UNIT;
+        /* Rotation speed: ~70 m/s (135 kts) for an F-16-ish jet. */
+        if (speed_ms_g > 70.0f) {
+            /* Command a positive AoA so the wing generates lift. */
+            pitch_in += 0.5f;
+            pitch_in = clampf(pitch_in, -1.0f, 1.0f);
+        } else if (speed_ms_g > 30.0f) {
+            /* Below rotation: hold the nose level so the jet tracks straight. */
+            pitch_in += -0.1f * (speed_ms_g / 70.0f);
+        }
+    }
 
-    /* --- Bank-to-turn: banked flight still yaws --- */
-    float bank = asinf(clampf(g_jet.right.y, -1.0f, 1.0f));
-    float yaw  = -bank * g_jet.bank_to_yaw * dt;
-    g_jet.forward = rotate_axis(g_jet.forward, v3(0,1,0), yaw);
-    g_jet.up      = rotate_axis(g_jet.up,      v3(0,1,0), yaw);
-    g_jet.right   = rotate_axis(g_jet.right,   v3(0,1,0), yaw);
+    /* ---------- 1b. Pitch trim ---------- */
+    /* Fly-by-wire: hold the AoA that balances weight at current speed.
+       Only chase the trim target when the wing is producing positive
+       lift in the aircraft's own frame (i.e., we're upright). If the
+       jet is inverted, chase |AoA| -> 0 instead, which lets the
+       weathercock and gravity bring it back level. This is what stops
+       the jet from tumbling when it gets flipped. */
+    {
+        float speed_ms_estimate = v3_len(g_jet.velocity) * METERS_PER_WORLD_UNIT;
+        if (!on_ground && speed_ms_estimate > 60.0f) {
+            int upright = (g_jet.aoa_rad >= -0.02f);   /* -1.1° tolerance */
 
-    /* --- Re-orthonormalize --- */
+            if (upright) {
+                /* Trim AoA so lift exactly balances weight at this speed. */
+                float q_est = 0.5f * 1.225f * speed_ms_estimate * speed_ms_estimate;
+                float weight_N = g_jet.mass * 9.81f;
+                float cl_needed = weight_N / (q_est * g_jet.wing_area);
+                float trim_aoa = cl_needed / g_jet.cl_slope;
+                trim_aoa = clampf(trim_aoa, 0.0f, g_jet.stall_aoa_rad * 0.7f);
+
+                float aoa_error = trim_aoa - g_jet.aoa_rad;
+                pitch_in += clampf(aoa_error * 1.2f, -0.12f, 0.12f);
+            } else {
+                /* Inverted: bleed off |AoA| toward zero. Do NOT try to
+                   reach a positive AoA through an inverted attitude —
+                   that's the runaway that produces the tumble. */
+                pitch_in += clampf(-g_jet.aoa_rad * 1.5f, -0.25f, 0.25f);
+            }
+            pitch_in = clampf(pitch_in, -1.0f, 1.0f);
+        }
+    }
+
+    /* ---------- 2. Airspeed and angle of attack ---------- */
+    float speed_wu = v3_len(g_jet.velocity);            /* world units/sec */
+    float speed_ms = speed_wu * METERS_PER_WORLD_UNIT;  /* m/s */
+    g_jet.speed = speed_wu;
+
+    float aoa = 0.0f;
+    if (speed_wu > 2.0f) {
+        /* AoA = angle between forward and velocity, signed by up-vector. */
+        vec3 vel_dir = v3_norm(g_jet.velocity);
+        float cos_aoa = clampf(v3_dot(g_jet.forward, vel_dir), -1.0f, 1.0f);
+        aoa = acosf(cos_aoa);
+        /* Signed AoA: positive when the nose is above the velocity vector,
+           in the aircraft's own frame. The right vector is the reference
+           because cross(vel_dir, forward) points along -right when the
+           nose is up, and along +right when the nose is down. Dotting
+           with right gives a stable sign that also handles inverted
+           attitudes correctly (inverted + nose-up -> negative AoA). */
+        float sign = (v3_dot(v3_cross(vel_dir, g_jet.forward), g_jet.right) > 0.0f)
+                     ? 1.0f : -1.0f;
+        aoa *= sign;
+    }
+    g_jet.aoa_rad = aoa;
+
+    /* ---------- 3. Control authority from dynamic pressure ---------- */
+    /* More airspeed = more control authority. Below stall, controls get soft. */
+    float q_factor = (speed_ms * speed_ms) / (200.0f * 200.0f);
+    q_factor = clampf(q_factor, 0.05f, 1.5f);
+
+    /* ---------- 4. Target angular acceleration from input ---------- */
+    /* Player input commands a target angular velocity. The inertia
+       determines how fast we get there. */
+    float target_pitch_rate = pitch_in * 1.6f * q_factor;   /* rad/sec */
+    float target_roll_rate  = roll_in  * 4.5f * q_factor;
+    float target_yaw_rate   = yaw_in   * 0.8f * q_factor;
+
+    /* Aerodynamic damping: the air resists rotation. */
+    float pitch_damp = 3.0f;
+    float roll_damp  = 4.0f;
+    float yaw_damp   = 3.0f;
+
+    /* Torque = inertia * angular_acceleration. Player commands angular
+       velocity; damping pulls current velocity toward target. */
+    vec3 target_omega = v3(target_pitch_rate, target_yaw_rate, target_roll_rate);
+
+    /* Body-frame angular velocity (x=pitch, y=yaw, z=roll). */
+    vec3 omega = g_jet.angular_velocity;
+    omega.x += (target_omega.x - omega.x) * pitch_damp * dt;
+    omega.y += (target_omega.y - omega.y) * yaw_damp   * dt;
+    omega.z += (target_omega.z - omega.z) * roll_damp  * dt;
+    g_jet.angular_velocity = omega;
+
+    /* ---------- 5. Integrate orientation ---------- */
+    /* Rotate forward/up/right by omega (body-frame rates). */
+    g_jet.forward = rotate_axis(g_jet.forward, g_jet.right,   omega.x * dt);
+    g_jet.up      = rotate_axis(g_jet.up,      g_jet.right,   omega.x * dt);
+
+    g_jet.forward = rotate_axis(g_jet.forward, g_jet.up,      omega.y * dt);
+    g_jet.right   = rotate_axis(g_jet.right,   g_jet.up,      omega.y * dt);
+
+    g_jet.up      = rotate_axis(g_jet.up,      g_jet.forward, omega.z * dt);
+    g_jet.right   = rotate_axis(g_jet.right,   g_jet.forward, omega.z * dt);
+
+    /* Re-orthonormalize. */
     g_jet.forward = v3_norm(g_jet.forward);
     g_jet.right   = v3_norm(v3_cross(g_jet.forward, g_jet.up));
     g_jet.up      = v3_cross(g_jet.right, g_jet.forward);
 
-    /* --- Throttle (W = faster, S = slower) --- */
-    float throttle = (float)(g_key_w - g_key_s);
-    if (throttle > 0.0f) {
-        g_jet.speed += g_jet.accel * dt;
-    } else if (throttle < 0.0f) {
-        g_jet.speed -= g_jet.accel * dt;
-    } else {
-        float cruise = g_jet.min_speed + 0.4f * (g_jet.max_speed - g_jet.min_speed);
-        g_jet.speed += (cruise - g_jet.speed) * 0.4f * dt;
+    /* ---------- 5b. Weathercock stability ---------- */
+    /* The tailplane pulls the nose toward the velocity vector. Without
+       this, pitch input causes AoA to run away. */
+    if (speed_wu > 5.0f) {
+        vec3 vel_dir_wc = v3_norm(g_jet.velocity);
+        vec3 align_axis = v3_cross(g_jet.forward, vel_dir_wc);
+        float align_mag = v3_len(align_axis);
+        if (align_mag > 1e-4f) {
+            float align_angle = asinf(clampf(align_mag, 0.0f, 1.0f));
+            float restore_rate = 5.0f * align_angle;
+            vec3 axis = v3_scale(align_axis, 1.0f / align_mag);
+            g_jet.forward = rotate_axis(g_jet.forward, axis, restore_rate * dt);
+            g_jet.up      = rotate_axis(g_jet.up,      axis, restore_rate * dt);
+            g_jet.right   = rotate_axis(g_jet.right,   axis, restore_rate * dt);
+            /* Re-orthonormalize */
+            g_jet.forward = v3_norm(g_jet.forward);
+            g_jet.right   = v3_norm(v3_cross(g_jet.forward, g_jet.up));
+            g_jet.up      = v3_cross(g_jet.right, g_jet.forward);
+        }
     }
-    g_jet.speed = clampf(g_jet.speed, g_jet.min_speed, g_jet.max_speed);
 
-    /* --- Position --- */
-    g_jet.position = v3_add(g_jet.position,
-                            v3_scale(g_jet.forward, g_jet.speed * dt));
+    /* ---------- 6. Aerodynamic forces ---------- */
+    /* Convert to metric for physics. */
+    vec3 vel_dir = (speed_wu > 0.01f) ? v3_scale(g_jet.velocity, 1.0f / speed_wu)
+                                       : g_jet.forward;
+    float rho = 1.225f;   /* sea-level air density */
 
-    /* Keep the probe grid centered on the jet. The bake itself is
-       local to the grid, so we only slide the world-to-grid
-       mapping by the same amount. Reflections stay stable. */
+    /* Stall: CL drops sharply past stall AoA. */
+    float aoa_abs = fabsf(aoa);
+    float cl;
+    if (aoa_abs < g_jet.stall_aoa_rad) {
+        cl = g_jet.cl_slope * aoa;
+    } else {
+        /* Past stall: lift falls off. Soft recovery — reduce CL by half. */
+        float over = (aoa_abs - g_jet.stall_aoa_rad) / g_jet.stall_aoa_rad;
+        cl = g_jet.cl_slope * aoa * (1.0f / (1.0f + over * 3.0f));
+    }
+
+    /* Dynamic pressure (Pa). */
+    float q = 0.5f * rho * speed_ms * speed_ms;
+
+    /* Lift magnitude. Direction: perpendicular to velocity, in the plane
+       of velocity and forward (i.e., toward the jet's "up" in the
+       velocity frame). */
+    float lift_N = q * g_jet.wing_area * cl;
+    vec3 lift_dir;
+    if (speed_wu > 2.0f) {
+        /* Lift direction: component of up perpendicular to velocity. */
+        vec3 up_proj = v3_sub(g_jet.up, v3_scale(vel_dir, v3_dot(g_jet.up, vel_dir)));
+        float ul = v3_len(up_proj);
+        lift_dir = (ul > 1e-4f) ? v3_scale(up_proj, 1.0f / ul) : g_jet.up;
+    } else {
+        lift_dir = g_jet.up;
+    }
+    vec3 lift_accel_ms2 = v3_scale(lift_dir, lift_N / g_jet.mass);
+
+    /* Drag: opposes velocity. CD = CD0 + CDi * CL^2. */
+    float cd = g_jet.cd0 + g_jet.cdi * cl * cl;
+    float drag_N = q * g_jet.wing_area * cd;
+    vec3 drag_accel_ms2 = (speed_wu > 0.01f)
+        ? v3_scale(vel_dir, -drag_N / g_jet.mass)
+        : v3(0, 0, 0);
+
+    /* Thrust: along forward. */
+    vec3 thrust_accel_ms2 = v3_scale(g_jet.forward,
+                                     g_jet.max_thrust * g_jet.throttle / g_jet.mass);
+
+    /* Gravity: world down. */
+    vec3 gravity_accel_ms2 = v3(0, -GRAVITY_MS2, 0);
+
+    /* ---------- 7. Integrate velocity and position ---------- */
+    vec3 accel_ms2 = v3_add(v3_add(thrust_accel_ms2, lift_accel_ms2),
+                            v3_add(drag_accel_ms2, gravity_accel_ms2));
+
+    /* Convert acceleration to world-units/sec^2, integrate. */
+    vec3 accel_wu = v3_scale(accel_ms2, WORLD_UNITS_PER_METER);
+    g_jet.velocity = v3_add(g_jet.velocity, v3_scale(accel_wu, dt));
+    g_jet.position = v3_add(g_jet.position, v3_scale(g_jet.velocity, dt));
+
+    {
+        static int dbg = 0;
+        if (dbg++ % 30 == 0) {
+            float lift_N = q * g_jet.wing_area * cl;
+            float drag_N = q * g_jet.wing_area * cd;
+            float thrust_N = g_jet.max_thrust * g_jet.throttle;
+            float weight_N = g_jet.mass * GRAVITY_MS2;
+            printf("[phys] spd=%.0fms aoa=%.2f° cl=%.3f lift=%.0fN drag=%.0fN thrust=%.0fN weight=%.0fN vy=%.2f\n",
+                   speed_ms, aoa * 57.2958f, cl, lift_N, drag_N, thrust_N, weight_N, g_jet.velocity.y);
+        }
+    }
+
+    /* ---------- 8. Ground collision ---------- */
+    if (g_jet.position.y < 0.5f) {
+        g_jet.position.y = 0.5f;
+        if (g_jet.velocity.y < 0.0f) g_jet.velocity.y = 0.0f;
+    }
+
+    /* ---------- 9. Cache g-load for HUD ---------- */
+    /* Vertical acceleration in the jet's own frame, in g. */
+    float g_accel = v3_dot(accel_ms2, g_jet.up) / GRAVITY_MS2;
+    g_jet.g_load = 1.0f + g_accel;
+
+    /* ---------- 10. Probe grid follows ---------- */
     g_probe_grid_offset = v3_sub(g_jet.position, v3(0.0f, 2.0f, 0.0f));
 
-    /* --- Chase camera --- */
-    float speed_frac = clampf((g_jet.speed - g_jet.min_speed)
-                              / (g_jet.max_speed - g_jet.min_speed), 0.0f, 1.0f);
-    float dist_back = g_jet.length * (2.4f + 0.5f * speed_frac);
-    float height_up = g_jet.length * (0.8f + 0.15f * speed_frac);
+    /* ---------- 11. Chase camera ---------- */
+    float speed_frac = clampf(speed_ms / g_jet.max_speed_ms, 0.0f, 1.0f);
+    float dist_back = g_jet.length * (2.4f + 0.6f * speed_frac);
+    float height_up = g_jet.length * (0.8f + 0.2f * speed_frac);
+
+    /* Camera back direction uses world-up-flattened forward, so the
+       camera doesn't roll with the jet. */
+    vec3 cam_forward = g_jet.forward;
+    vec3 cam_up      = v3(0, 1, 0);
 
     vec3 desired_pos = v3_add(
-        v3_add(g_jet.position, v3_scale(g_jet.forward, -dist_back)),
-        v3(0.0f, height_up, 0.0f));
+        v3_add(g_jet.position, v3_scale(cam_forward, -dist_back)),
+        v3_scale(cam_up, height_up));
     vec3 desired_target = v3_add(g_jet.position,
-                                 v3_scale(g_jet.forward, g_jet.length * 0.6f));
+                                 v3_scale(cam_forward, g_jet.length * 0.6f));
 
     if (!g_cam_initialized) {
         g_cam_pos = desired_pos;
         g_cam_target = desired_target;
         g_cam_initialized = 1;
     } else {
-        float pos_k = 1.0f - expf(-6.0f * dt);
-        float aim_k = 1.0f - expf(-10.0f * dt);
+        float pos_k = 1.0f - expf(-4.0f * dt);
+        float aim_k = 1.0f - expf(-8.0f * dt);
         g_cam_pos    = lerp3(g_cam_pos,    desired_pos,    pos_k);
         g_cam_target = lerp3(g_cam_target, desired_target, aim_k);
     }
 
+    /* ---------- 12. Reset (R key) ---------- */
     if (g_key_r) {
-        g_jet.position = v3(0.0f, 4.0f, 0.0f);
+        g_jet.position = v3(0.0f, 0.5f, 0.0f);
         g_jet.forward  = v3(0.0f, 0.0f, -1.0f);
         g_jet.up       = v3(0.0f, 1.0f, 0.0f);
         g_jet.right    = v3(1.0f, 0.0f, 0.0f);
-        g_jet.speed    = g_jet.length * 6.0f;
+        g_jet.velocity = v3(0.0f, 2.0f, -250.0f * WORLD_UNITS_PER_METER);
+        g_jet.angular_velocity = v3(0,0,0);
+        g_jet.throttle = 0.7f;
         g_cam_initialized = 0;
         g_key_r = 0;
     }
@@ -321,9 +543,13 @@ vec3 game_wingtip_right(void) { return g_wingtip_right_world; }
 vec3  game_jet_position(void)  { return g_jet.position; }
 vec3  game_jet_forward(void)   { return g_jet.forward; }
 float game_jet_speed(void)    { return g_jet.speed; }
-float game_jet_throttle(void) { return g_jet.speed / g_jet.max_speed; }
+float game_jet_throttle(void) { return g_jet.throttle; }   /* raw 0..1 throttle */
 vec3  game_jet_right(void)     { return g_jet.right; }
 vec3  game_jet_up(void)        { return g_jet.up; }
+float game_jet_aoa(void)      { return g_jet.aoa_rad; }
+float game_jet_g_load(void)   { return g_jet.g_load; }
+vec3  game_jet_velocity(void) { return g_jet.velocity; }
+float game_jet_throttle_raw(void) { return g_jet.throttle; }
 
 vec3 game_probe_grid_offset(void) { return g_probe_grid_offset; }
 vec3 game_camera_pos(void)    { return g_cam_pos; }
@@ -336,10 +562,26 @@ static mat4 build_aircraft_model(void) {
     vec3 u = g_jet.up;
     vec3 r = g_jet.right;
 
-    m.m[0]  = -f.x;  m.m[4]  = u.x;  m.m[8]  = -r.x;  m.m[12] = g_jet.position.x;
-    m.m[1]  = -f.y;  m.m[5]  = u.y;  m.m[9]  = -r.y;  m.m[13] = g_jet.position.y;
-    m.m[2]  = -f.z;  m.m[6]  = u.z;  m.m[10] = -r.z;  m.m[14] = g_jet.position.z;
-    m.m[3]  =  0;    m.m[7]  = 0;    m.m[11] =  0;    m.m[15] = 1;
+    /* Body-to-world: columns are (body X, body Y, body Z) mapped to world.
+       glTF models conventionally have nose along -Z or +X depending on the
+       exporter. We assume the loaded model has nose along -Z (glTF
+       default for Blender/Maya exports), so body +X = world -Z_model.
+       The signs below put:
+         world +X (body fwd)  -> model -Z
+         world +Y (body up)   -> model +Y
+         world +Z (body right)-> model +X
+       If your specific model is oriented differently, flip the -f signs. */
+    /* Blender export: model nose is along -X_model, up is +Y_model,
+       right wing is +Z_model. Map body axes to model axes:
+         body +X (forward) -> model -X
+         body +Y (up)      -> model +Y
+         body +Z (right)   -> model +Z
+       Columns of this matrix are the model-space images of the body axes,
+       written column-major (each column is one basis vector). */
+    m.m[0]  = -f.x;  m.m[4]  = u.x;  m.m[8]  = r.x;  m.m[12] = g_jet.position.x;
+    m.m[1]  = -f.y;  m.m[5]  = u.y;  m.m[9]  = r.y;  m.m[13] = g_jet.position.y;
+    m.m[2]  = -f.z;  m.m[6]  = u.z;  m.m[10] = r.z;  m.m[14] = g_jet.position.z;
+    m.m[3]  =  0;    m.m[7]  = 0;    m.m[11] = 0;    m.m[15] = 1;
     return m;
 }
 

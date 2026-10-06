@@ -36,4 +36,9 @@ float game_jet_throttle(void);
 
 vec3 game_jet_forward(void);
 
+float game_jet_aoa(void);
+float game_jet_g_load(void);
+vec3  game_jet_velocity(void);
+float game_jet_throttle_raw(void);
+
 #endif
