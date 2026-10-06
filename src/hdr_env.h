@@ -1,11 +1,11 @@
 #ifndef HDR_ENV_H
 #define HDR_ENV_H
 
-#include <GLES3/gl3.h>
+#include <bgfx/c99/bgfx.h>
 #include "math3d.h"
 
 typedef struct {
-    GLuint tex;
+    bgfx_texture_handle_t tex;
     int    width;
     int    height;
     int    valid;

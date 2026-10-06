@@ -18,7 +18,6 @@ HDREnv hdr_env_load(const char* path) {
     float* data = stbi_loadf_from_memory((const unsigned char*)bytes, (int)len,
                                           &w, &h, &comp, 4);
     free(bytes);
-
     if (!data) {
         fprintf(stderr, "hdr_env: stbi_loadf failed for %s\n", path);
         return env;
@@ -26,19 +25,26 @@ HDREnv hdr_env_load(const char* path) {
 
     printf("hdr_env: loaded %s (%dx%d, %d channels)\n", path, w, h, comp);
 
-    glGenTextures(1, &env.tex);
-    glBindTexture(GL_TEXTURE_2D, env.tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, data);
+    uint64_t flags = BGFX_TEXTURE_NONE
+                   | BGFX_SAMPLER_U_CLAMP
+                   | BGFX_SAMPLER_V_CLAMP
+                   | BGFX_SAMPLER_MIN_ANISOTROPIC;
 
-    /* No mipmaps — keeps the texture always-complete and filterable */
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    const bgfx_memory_t* mem = bgfx_copy(data, (uint32_t)(w * h * 4 * sizeof(float)));
+
+    /* RGBA32F for HDR sky. bgfx handles the float upload. */
+    env.tex = bgfx_create_texture_2d(
+        (uint16_t)w, (uint16_t)h, false, 1,
+        BGFX_TEXTURE_FORMAT_RGBA32F,
+        flags,
+        mem, 0);
 
     stbi_image_free(data);
+
+    if (env.tex.idx == UINT16_MAX) {
+        fprintf(stderr, "hdr_env: texture creation failed\n");
+        return env;
+    }
 
     env.width = w;
     env.height = h;
@@ -47,7 +53,7 @@ HDREnv hdr_env_load(const char* path) {
 }
 
 void hdr_env_destroy(HDREnv* h) {
-    if (h->tex) glDeleteTextures(1, &h->tex);
-    h->tex = 0;
+    if (h->tex.idx && h->tex.idx != UINT16_MAX) bgfx_destroy_texture(h->tex);
+    h->tex.idx = UINT16_MAX;
     h->valid = 0;
 }
