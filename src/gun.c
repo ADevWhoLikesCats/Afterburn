@@ -77,6 +77,13 @@ void gun_shutdown(Gun* g) {
 }
 
 void gun_update(Gun* g, float dt, vec3 origin, vec3 forward, int fire_input) {
+    {
+        static int dbg = 0;
+        if (dbg++ % 30 == 0) {
+            printf("[gun] update: fire=%d cooldown=%.3f bullets_active=?\n",
+                   fire_input, g->fire_cooldown);
+        }
+    }
     g->firing = fire_input;
 
     g->fire_cooldown -= dt;
@@ -90,6 +97,11 @@ void gun_update(Gun* g, float dt, vec3 origin, vec3 forward, int fire_input) {
                 b->age      = 0.0f;
                 b->position = v3_add(origin, v3_scale(forward, 1.5f));
                 b->velocity = v3_scale(forward, GUN_BULLET_SPEED);
+                {
+                    static int dbg = 0;
+                    if (dbg++ % 10 == 0) printf("[gun] spawn bullet at (%.2f,%.2f,%.2f)\n",
+                                                 b->position.x, b->position.y, b->position.z);
+                }
                 break;
             }
         }
@@ -125,11 +137,10 @@ void gun_render(Gun* g, mat4 viewproj, vec3 cam) {
         if (!b->active) continue;
 
         vec3 dir = v3_norm(b->velocity);
-        vec3 to_cam = v3_sub(cam, b->position);
-        vec3 right = v3_cross(dir, to_cam);
-        float rl = v3_len(right);
-        if (rl < 1e-4f) continue;
-        right = v3_scale(right, 1.0f / rl);
+        vec3 up = v3(0, 1, 0);
+        if (fabsf(v3_dot(dir, up)) > 0.99f) up = v3(1, 0, 0);
+        vec3 right = v3_norm(v3_cross(dir, up));
+        (void)cam;
 
         vec3 tail = b->position;
         vec3 head = v3_add(b->position, v3_scale(dir, GUN_BULLET_LEN));
@@ -174,6 +185,10 @@ void gun_render(Gun* g, mat4 viewproj, vec3 cam) {
         verts[v_count*3+0]=d.x; verts[v_count*3+1]=d.y; verts[v_count*3+2]=d.z; v_count++;
     }
 
+    {
+        static int dbg = 0;
+        if (dbg++ % 30 == 0) printf("[gun] render v_count=%d\n", v_count);
+    }
     if (v_count == 0) return;
 
     glUseProgram(g_prog);

@@ -20,6 +20,7 @@
 #include "hdr_env.h"
 #include "trail.h"
 #include "hud.h"
+#include "gun.h"
 #include "game.h"
 
 #define CAR_PATH "/assets/model.glb"
@@ -27,11 +28,12 @@
 static GLuint prog;
 
 static int g_mouse_firing = 0;
-void game_set_firing(int firing) { g_mouse_firing = firing; }
+void game_set_firing(int firing) { g_mouse_firing = firing; printf("[firing] %d\n", firing); }
 
 static Trail* g_trail_left  = NULL;
 static Trail* g_trail_right = NULL;
 static int   g_trails_initialized = 0;
+static Gun   g_gun;
 
 GLuint game_pbr_prog(void) { return prog; }
 static GLint  u_model, u_viewproj, u_normalmat;
@@ -498,6 +500,8 @@ static void init(void) {
     trail_create(g_trail_left);
     trail_create(g_trail_right);
     g_trails_initialized = 1;
+
+    gun_init(&g_gun);
     printf("[trail] initialized: left.prog=%u right.prog=%u\n",
            g_trail_left->prog, g_trail_right->prog);
 
@@ -526,6 +530,12 @@ static void init(void) {
                     Module._game_mouse_move(e.movementX || 0, e.movementY || 0);
                 }
             }
+        });
+        canvas.addEventListener("mousedown", function(e) {
+            if (e.button === 0) Module.ccall("game_set_firing", null, ["number"], [1]);
+        });
+        canvas.addEventListener("mouseup", function(e) {
+            if (e.button === 0) Module.ccall("game_set_firing", null, ["number"], [0]);
         });
     });
 
@@ -718,6 +728,12 @@ static void frame(void) {
     }
     game_update_wingtips();
     if (g_trails_initialized) {
+    {
+        vec3 jet_pos = game_jet_position();
+        vec3 fwd     = game_jet_forward();
+        vec3 nose    = v3_add(jet_pos, v3_scale(fwd, 1.5f));
+        gun_update(&g_gun, dt, nose, fwd, g_mouse_firing);
+    }
         /* Push every 6th frame. The ring buffer holds 256 points, so
            this gives ~25 seconds of trail at 60 fps. */
         static int push_div = 0;
@@ -805,10 +821,18 @@ static void frame(void) {
             if (fr++ < 3) printf("[frame] &g_trail_left=%p prog=%u\n",
                                   (void*)g_trail_left, g_trail_left->prog);
         }
-        trail_render(g_trail_left,  vp_t, cam, 0.001);
-        trail_render(g_trail_right, vp_t, cam, 0.001);
+        trail_render(g_trail_left,  vp_t, cam, 0.35f);
+        trail_render(g_trail_right, vp_t, cam, 0.35f);
     }
 
+    {
+        mat4 g_view = m4_look_at(cam, cam_target, v3(0, 1, 0));
+        mat4 g_proj = m4_perspective(50.0f * 3.14159265f / 180.0f,
+                                     (float)g_scene_fb.width / (float)g_scene_fb.height,
+                                     0.1f, 200.0f);
+        mat4 g_vp = m4_mul(g_proj, g_view);
+        gun_render(&g_gun, g_vp, cam);
+    }
 
     /* Sky pass (AFTER scene, so the scene doesn't erase it) */
     /* Sky background pass */
