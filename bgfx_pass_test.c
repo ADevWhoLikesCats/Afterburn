@@ -30,9 +30,7 @@ static char* read_whole_file(const char* path, size_t* out_sz) {
 
 /* asset_load is called by pass.c; we route it to plain fopen here
    so the smoke test doesn't need the whole engine's asset layer. */
-char* asset_load(const char* path, size_t* out_size) {
-    return read_whole_file(path, out_size);
-}
+
 
 static void make_gradient(float* p, int w, int h) {
     for (int y = 0; y < h; ++y) {

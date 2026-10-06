@@ -35,9 +35,7 @@ static char* read_whole_file(const char* path, size_t* out_sz) {
 }
 
 /* asset_load is called by pass.c */
-char* asset_load(const char* path, size_t* out_size) {
-    return read_whole_file(path, out_size);
-}
+
 
 /* Gradient generator (same as before, HDR values). */
 static void make_gradient(float* p, int w, int h) {

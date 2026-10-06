@@ -31,9 +31,7 @@ static char* read_whole_file(const char* path, size_t* out_sz) {
     if (out_sz) *out_sz = (size_t)sz;
     return b;
 }
-char* asset_load(const char* path, size_t* out_size) {
-    return read_whole_file(path, out_size);
-}
+
 
 /* A fixed camera looking slightly up and forward. */
 static mat4 make_view(void) {
