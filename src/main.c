@@ -380,7 +380,7 @@ static void init(void) {
     }
 
     /* Ground plane at the car's bottom Y */
-    float ground_y = g_car.min_bb.y * scale - c.y * scale - 0.02f;
+    float ground_y = -2.0f;   /* below the jet's flight level */
     g_ground = ground_create(ground_y, 10000.0f);
     printf("=== before sky pass creation ===\n");
     for (int _k = 0; _k < 3; ++_k) {
