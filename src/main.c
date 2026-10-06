@@ -22,6 +22,8 @@
 #include "hud.h"
 #include "gun.h"
 #include "game.h"
+#include "enemy.h"
+#include "missile.h"
 
 #define CAR_PATH "/assets/model.glb"
 
@@ -176,6 +178,10 @@ static EM_BOOL on_key(int event_type, const EmscriptenKeyboardEvent* e, void* us
 
     game_key_down(e->key);
 
+    if (e->key[0] == ' ') {
+        game_fire_track_missile();
+    }
+
     if (e->key[0] == 'm' || e->key[0] == 'M') {
         g_debug_mode = (g_debug_mode + 1) % 16;
         printf("debug mode -> %d\n", g_debug_mode);
@@ -287,6 +293,21 @@ static EM_BOOL on_pointer_lock_change(int event_type, const EmscriptenPointerloc
     game_set_pointer_locked(e->isActive);
     printf("[mouse] pointer lock %s\n", e->isActive ? "acquired" : "released");
     return EM_FALSE;
+}
+
+static int world_to_screen(vec3 world, mat4 viewproj,
+                           float screen_w, float screen_h,
+                           float* sx, float* sy)
+{
+    float x = viewproj.m[0]*world.x + viewproj.m[4]*world.y + viewproj.m[8]*world.z  + viewproj.m[12];
+    float y = viewproj.m[1]*world.x + viewproj.m[5]*world.y + viewproj.m[9]*world.z  + viewproj.m[13];
+    float w = viewproj.m[3]*world.x + viewproj.m[7]*world.y + viewproj.m[11]*world.z + viewproj.m[15];
+    if (w <= 0.0f) return 0;
+    float nx = x / w;
+    float ny = y / w;
+    *sx = (nx * 0.5f + 0.5f) * screen_w;
+    *sy = (1.0f - (ny * 0.5f + 0.5f)) * screen_h;
+    return 1;
 }
 
 static void init(void) {
@@ -529,10 +550,27 @@ static void init(void) {
                 if (Module._game_mouse_move) {
                     Module._game_mouse_move(e.movementX || 0, e.movementY || 0);
                 }
+                if (Module._game_mouse_pan) {
+                    Module._game_mouse_pan(e.movementX || 0, e.movementY || 0);
+                }
             }
         });
+        document.addEventListener("mousedown", function(e) {
+            if (e.button === 2 && Module._game_set_pan) {
+                Module._game_set_pan(1);
+                e.preventDefault();
+            }
+        });
+        document.addEventListener("mouseup", function(e) {
+            if (e.button === 2 && Module._game_set_pan) {
+                Module._game_set_pan(0);
+            }
+        });
+        canvas.addEventListener("contextmenu", function(e) { e.preventDefault(); });
         canvas.addEventListener("mousedown", function(e) {
             if (e.button === 0) Module.ccall("game_set_firing", null, ["number"], [1]);
+            if (e.button === 2) Module.ccall("game_fire_track_missile", null, [], []);
+            if (e.button === 1) Module.ccall("game_fire_burn_missile",  null, [], []);
         });
         canvas.addEventListener("mouseup", function(e) {
             if (e.button === 0) Module.ccall("game_set_firing", null, ["number"], [0]);
@@ -693,6 +731,18 @@ static void draw_car_into_fb(int w, int h, vec3 cam) {
 
 
     game_render(w, h);
+    enemy_render_all(w, h);
+
+    /* Missiles drawn with the same viewproj as the gun */
+    {
+        vec3 mt_target = game_ready() ? game_camera_target() : v3(0.0f, 0.0f, 0.0f);
+        mat4 m_view = m4_look_at(cam, mt_target, v3(0, 1, 0));
+        mat4 m_proj = m4_perspective(50.0f * 3.14159265f / 180.0f,
+                                     (float)g_scene_fb.width / (float)g_scene_fb.height,
+                                     0.1f, 200.0f);
+        mat4 m_vp = m4_mul(m_proj, m_view);
+        game_render_missiles(m_vp, cam);
+    }
 
     glEnable(GL_CULL_FACE);
 }
@@ -725,6 +775,87 @@ static void frame(void) {
         float alt_ft  = altitude * 3.281f;
         float mach    = internal_speed / 340.0f;
         hud_update(spd_kts, alt_ft, mach, throttle, 6, 0, 0);
+
+    /* HUD: enemy lock box, off-screen arrow, missile counts. */
+    {
+        vec3 hud_cam     = game_camera_pos();
+        vec3 hud_cam_tgt = game_camera_target();
+        mat4 hud_view = m4_look_at(hud_cam, hud_cam_tgt, v3(0, 1, 0));
+        mat4 hud_proj = m4_perspective(50.0f * 3.14159265f / 180.0f,
+                                       (float)g_screen_w / (float)g_screen_h,
+                                       0.1f, 200.0f);
+        mat4 hud_vp   = m4_mul(hud_proj, hud_view);
+
+        int   lock_i    = game_lock_target();
+        float lock_prog = game_lock_progress();
+        float cx        = (float)g_screen_w * 0.5f;
+        float cy        = (float)g_screen_h * 0.5f;
+        int   any_alive = 0;
+        int   drew_lock = 0;
+        int   drew_arrow = 0;
+
+        for (int i = 0; i < 8; ++i) {
+            if (!game_enemy_alive(i)) continue;
+            any_alive = 1;
+
+            vec3  p  = game_enemy_position(i);
+            float sx = 0, sy = 0;
+            int in_front = world_to_screen(p, hud_vp,
+                                           (float)g_screen_w, (float)g_screen_h,
+                                           &sx, &sy);
+
+            int on_screen = in_front &&
+                            sx > 0.0f && sx < (float)g_screen_w &&
+                            sy > 0.0f && sy < (float)g_screen_h;
+
+            if (on_screen && i == lock_i && !drew_lock) {
+                vec3 to_e = v3_sub(p, hud_cam);
+                float dist = v3_len(to_e);
+                float size = 1200.0f / (dist + 20.0f);
+                if (size < 24.0f) size = 24.0f;
+                if (size > 220.0f) size = 220.0f;
+                int locked = (lock_prog >= 1.0f) ? 1 : 0;
+                hud_update_lock_box(1, locked, lock_prog, sx, sy, size);
+                drew_lock = 1;
+            } else if (!on_screen && (i == lock_i || lock_i < 0) && !drew_arrow) {
+                float margin = 50.0f;
+                float dx = sx - cx;
+                float dy = sy - cy;
+                if (!in_front) {
+                    dx = -dx;
+                    dy = -dy;
+                }
+                float len = sqrtf(dx*dx + dy*dy);
+                if (len < 1e-3f) { dx = 0; dy = -1; len = 1; }
+                float max_x = cx - margin;
+                float max_y = cy - margin;
+                float scale_x = (fabsf(dx) > 1e-3f) ? max_x / fabsf(dx) : 1e9f;
+                float scale_y = (fabsf(dy) > 1e-3f) ? max_y / fabsf(dy) : 1e9f;
+                float scale   = (scale_x < scale_y) ? scale_x : scale_y;
+                if (scale > 1.0f) scale = 1.0f;
+                float ex = cx + dx * scale;
+                float ey = cy + dy * scale;
+
+                float angle_deg = atan2f(dy, dx) * 57.2958f + 90.0f;
+
+                vec3 to_e = v3_sub(p, hud_cam);
+                float dist_m = v3_len(to_e) * 5.0f;
+
+                hud_update_enemy_arrow(1, ex, ey, angle_deg, dist_m);
+                drew_arrow = 1;
+            }
+        }
+
+        if (!any_alive) {
+            hud_update_lock_box(0, 0, 0, 0, 0, 0);
+            hud_update_enemy_arrow(0, 0, 0, 0, 0);
+        } else {
+            if (!drew_lock)  hud_update_lock_box(0, 0, 0, 0, 0, 0);
+            if (!drew_arrow) hud_update_enemy_arrow(0, 0, 0, 0, 0);
+        }
+
+        hud_update_missiles(game_track_missiles(), game_burn_missiles());
+    }
     }
     game_update_wingtips();
     if (g_trails_initialized) {

@@ -19,11 +19,26 @@ vec3 game_wingtip_right(void);
 vec3 game_camera_target(void);
 int  game_ready(void);
 
+/* Missile API */
+void  game_fire_track_missile(void);
+void  game_fire_burn_missile(void);
+int   game_track_missiles(void);
+int   game_burn_missiles(void);
+int   game_lock_target(void);
+float game_lock_progress(void);
+int   game_enemy_count(void);
+vec3  game_enemy_position(int i);
+int   game_enemy_alive(int i);
+void  game_render_missiles(mat4 viewproj, vec3 cam);
+
+
 void game_key_down(const char* key);
 void game_key_up(const char* key);
 
 /* Called by main.c when the mouse moves (in pixels, browser coords). */
 void game_mouse_move(double x, double y);
+void game_mouse_pan(double dx, double dy);
+void game_set_pan(int active);
 /* Called when pointer lock is acquired / released. */
 void game_set_pointer_locked(int locked);
 

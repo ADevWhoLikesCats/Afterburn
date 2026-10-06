@@ -1,4 +1,6 @@
 #include "game.h"
+#include "enemy.h"
+#include "missile.h"
 #include <math.h>
 #include <stdio.h>
 #include <emscripten.h>
@@ -43,8 +45,12 @@ typedef struct {
 } Aircraft;
 
 static Aircraft g_jet;
+static MissileBay g_missiles;
+static int g_lock_target = -1;
+static float g_lock_progress = 0.0f;
+static int g_lock_acquired = 0;
 static vec3     g_probe_grid_offset = {0,0,0};
-static mat4     g_jet_base_transform;
+mat4            g_jet_base_transform;   /* extern in enemy.c */
 static Model    g_jet_model;
 static int      g_jet_loaded = 0;
 
@@ -64,6 +70,11 @@ static int    g_mouse_have_last = 0;
    These decay each frame because they only represent movement during the
    last frame — the mouse is a rate input, not a position input. */
 static float g_pitch_axis = 0.0f;
+
+static float  g_cam_pan_yaw   = 0.0f;
+static float  g_cam_pan_pitch = 0.0f;
+static double g_pan_dx = 0.0, g_pan_dy = 0.0;
+static int    g_pan_active = 0;
 static float g_roll_axis  = 0.0f;
 
 /* Radians per pixel of mouse motion. Tune these. */
@@ -95,6 +106,19 @@ void game_mouse_move(double dx, double dy) {
     if (!g_pointer_locked) return;
     g_mouse_dx += dx;
     g_mouse_dy += dy;
+}
+
+void game_mouse_pan(double dx, double dy) {
+    if (!g_pan_active) return;
+    g_pan_dx += dx;
+    g_pan_dy += dy;
+}
+
+void game_set_pan(int active) {
+    g_pan_active = active;
+    if (!active) {
+        g_pan_dx = g_pan_dy = 0.0;
+    }
 }
 
 void game_set_pointer_locked(int locked) {
@@ -181,6 +205,8 @@ void game_init(void) {
     compute_wingtips();
     printf("[game] jet loaded: length=%.2f\n", g_jet.length);
     g_probe_grid_offset = v3_sub(g_jet.position, v3(0.0f, 2.0f, 0.0f));
+    enemy_init_all();
+    missile_bay_init(&g_missiles);
     printf("[game] probe grid offset initialized to (%.1f, %.1f, %.1f)\n",
            g_probe_grid_offset.x, g_probe_grid_offset.y, g_probe_grid_offset.z);
 }
@@ -209,7 +235,7 @@ void game_update(float dt) {
     /* Normalize to -1..1. The mouse axis is per-frame pulses; scale up. */
     float pitch_in = clampf(g_pitch_axis * 12.0f, -1.0f, 1.0f);
     float roll_in  = clampf(g_roll_axis  * 12.0f, -1.0f, 1.0f);
-    float yaw_in   = (float)(g_key_d - g_key_a);  /* D = right */
+    float yaw_in   = (float)(g_key_a - g_key_d);  /* A = nose left, D = nose right */
 
     /* Throttle: W increases, S decreases. Persistent. */
     if (g_key_w) g_jet.throttle += 0.6f * dt;
@@ -291,19 +317,19 @@ void game_update(float dt) {
     /* ---------- 3. Control authority from dynamic pressure ---------- */
     /* More airspeed = more control authority. Below stall, controls get soft. */
     float q_factor = (speed_ms * speed_ms) / (200.0f * 200.0f);
-    q_factor = clampf(q_factor, 0.05f, 1.5f);
+    q_factor = clampf(q_factor, 0.15f, 1.5f);   /* floor raised for rudder */
 
     /* ---------- 4. Target angular acceleration from input ---------- */
     /* Player input commands a target angular velocity. The inertia
        determines how fast we get there. */
     float target_pitch_rate = pitch_in * 1.6f * q_factor;   /* rad/sec */
     float target_roll_rate  = roll_in  * 4.5f * q_factor;
-    float target_yaw_rate   = yaw_in   * 0.8f * q_factor;
+    float target_yaw_rate   = yaw_in   * 2.5f * q_factor;   /* harsh rudder */
 
     /* Aerodynamic damping: the air resists rotation. */
     float pitch_damp = 3.0f;
     float roll_damp  = 4.0f;
-    float yaw_damp   = 3.0f;
+    float yaw_damp   = 6.0f;   /* snappier rudder response */
 
     /* Torque = inertia * angular_acceleration. Player commands angular
        velocity; damping pulls current velocity toward target. */
@@ -434,34 +460,106 @@ void game_update(float dt) {
     float g_accel = v3_dot(accel_ms2, g_jet.up) / GRAVITY_MS2;
     g_jet.g_load = 1.0f + g_accel;
 
+    /* ---------- 9b. Enemy AI ---------- */
+    enemy_update_all(dt);
+
+    /* ---------- 9c. Missile lock and update ---------- */
+    {
+        /* Find the closest alive enemy within gimbal + range. */
+        vec3 eye = g_jet.position;
+        vec3 fwd = g_jet.forward;
+        int best = -1;
+        float best_cos = 0.5f;   /* 60° gimbal → cos(60°) = 0.5 */
+        for (int i = 0; i < ENEMY_COUNT; ++i) {
+            if (!enemy_alive(i)) continue;
+            vec3 to_e = v3_sub(enemy_position(i), eye);
+            float d = v3_len(to_e);
+            if (d < 1e-3f) continue;
+            if (d > 6000.0f / 5.0f) continue;   /* 6 km max */
+            float cos_a = v3_dot(fwd, v3_scale(to_e, 1.0f / d));
+            if (cos_a > best_cos) {
+                best_cos = cos_a;
+                best = i;
+            }
+        }
+
+        if (best >= 0) {
+            g_lock_target = best;
+            g_lock_progress += dt / 1.0f;   /* 1 second to lock */
+            if (g_lock_progress >= 1.0f) {
+                g_lock_progress = 1.0f;
+                g_lock_acquired = 1;
+            }
+        } else {
+            g_lock_progress -= dt * 2.0f;
+            if (g_lock_progress <= 0.0f) {
+                g_lock_progress = 0.0f;
+                g_lock_acquired = 0;
+                g_lock_target = -1;
+            }
+        }
+    }
+
+    missile_update(&g_missiles, dt);
+
     /* ---------- 10. Probe grid follows ---------- */
     g_probe_grid_offset = v3_sub(g_jet.position, v3(0.0f, 2.0f, 0.0f));
 
-    /* ---------- 11. Chase camera ---------- */
-    float speed_frac = clampf(speed_ms / g_jet.max_speed_ms, 0.0f, 1.0f);
-    float dist_back = g_jet.length * (2.4f + 0.6f * speed_frac);
-    float height_up = g_jet.length * (0.8f + 0.2f * speed_frac);
+    /* ---------- 11. Chase camera with pan ---------- */
+    {
+        float speed_frac = clampf(speed_ms / g_jet.max_speed_ms, 0.0f, 1.0f);
+        float dist_back = g_jet.length * (2.4f + 0.6f * speed_frac);
+        float height_up = g_jet.length * (0.8f + 0.2f * speed_frac);
 
-    /* Camera back direction uses world-up-flattened forward, so the
-       camera doesn't roll with the jet. */
-    vec3 cam_forward = g_jet.forward;
-    vec3 cam_up      = v3(0, 1, 0);
+        const float PAN_SENS = 0.003f;
+        const float PAN_MAX  = 1.2f;
+        if (g_pan_active) {
+            g_cam_pan_yaw   -= (float)g_pan_dx * PAN_SENS;
+            g_cam_pan_pitch -= (float)g_pan_dy * PAN_SENS;
+            if (g_cam_pan_yaw   >  PAN_MAX) g_cam_pan_yaw   =  PAN_MAX;
+            if (g_cam_pan_yaw   < -PAN_MAX) g_cam_pan_yaw   = -PAN_MAX;
+            if (g_cam_pan_pitch >  PAN_MAX) g_cam_pan_pitch =  PAN_MAX;
+            if (g_cam_pan_pitch < -PAN_MAX) g_cam_pan_pitch = -PAN_MAX;
+        }
+        g_pan_dx = g_pan_dy = 0.0;
 
-    vec3 desired_pos = v3_add(
-        v3_add(g_jet.position, v3_scale(cam_forward, -dist_back)),
-        v3_scale(cam_up, height_up));
-    vec3 desired_target = v3_add(g_jet.position,
-                                 v3_scale(cam_forward, g_jet.length * 0.6f));
+        if (!g_pan_active) {
+            float k = 1.0f - expf(-6.0f * dt);
+            g_cam_pan_yaw   *= (1.0f - k);
+            g_cam_pan_pitch *= (1.0f - k);
+        }
 
-    if (!g_cam_initialized) {
-        g_cam_pos = desired_pos;
-        g_cam_target = desired_target;
-        g_cam_initialized = 1;
-    } else {
-        float pos_k = 1.0f - expf(-4.0f * dt);
-        float aim_k = 1.0f - expf(-8.0f * dt);
-        g_cam_pos    = lerp3(g_cam_pos,    desired_pos,    pos_k);
-        g_cam_target = lerp3(g_cam_target, desired_target, aim_k);
+        vec3 cam_forward = g_jet.forward;
+        vec3 cam_up      = v3(0, 1, 0);
+
+        vec3 home_pos = v3_add(
+            v3_add(g_jet.position, v3_scale(cam_forward, -dist_back)),
+            v3_scale(cam_up, height_up));
+
+        vec3 home_dir = v3_norm(v3_sub(g_jet.position, home_pos));
+
+        vec3 pan_dir = rotate_axis(home_dir, v3(0, 1, 0), g_cam_pan_yaw);
+        vec3 pan_right = v3_cross(pan_dir, v3(0, 1, 0));
+        float pr_len = v3_len(pan_right);
+        if (pr_len > 1e-4f) {
+            pan_right = v3_scale(pan_right, 1.0f / pr_len);
+            pan_dir = rotate_axis(pan_dir, pan_right, g_cam_pan_pitch);
+        }
+
+        vec3 desired_pos = home_pos;
+        vec3 desired_target = v3_add(home_pos,
+                                     v3_scale(pan_dir, dist_back + g_jet.length));
+
+        if (!g_cam_initialized) {
+            g_cam_pos    = desired_pos;
+            g_cam_target = desired_target;
+            g_cam_initialized = 1;
+        } else {
+            float pos_k = 1.0f - expf(-6.0f * dt);
+            float aim_k = 1.0f - expf(-10.0f * dt);
+            g_cam_pos    = lerp3(g_cam_pos,    desired_pos,    pos_k);
+            g_cam_target = lerp3(g_cam_target, desired_target, aim_k);
+        }
     }
 
     /* ---------- 12. Reset (R key) ---------- */
@@ -555,6 +653,30 @@ vec3 game_probe_grid_offset(void) { return g_probe_grid_offset; }
 vec3 game_camera_pos(void)    { return g_cam_pos; }
 vec3 game_camera_target(void) { return g_cam_target; }
 int  game_ready(void)         { return g_jet_loaded; }
+
+/* ---------- Missile firing API ---------- */
+void game_render_missiles(mat4 viewproj, vec3 cam) {
+    missile_render(&g_missiles, viewproj, cam);
+}
+
+void game_fire_track_missile(void) {
+    missile_fire(&g_missiles, MISSILE_KIND_TRACK,
+                 g_jet.position, g_jet.forward, g_jet.velocity,
+                 g_lock_acquired ? g_lock_target : -1);
+}
+void game_fire_burn_missile(void) {
+    missile_fire(&g_missiles, MISSILE_KIND_BURN,
+                 g_jet.position, g_jet.forward, g_jet.velocity,
+                 -1);
+}
+int  game_track_missiles(void) { return missile_track_count(&g_missiles); }
+int  game_burn_missiles(void)  { return missile_burn_count(&g_missiles);  }
+int  game_lock_target(void)    { return g_lock_acquired ? g_lock_target : -1; }
+float game_lock_progress(void) { return g_lock_progress; }
+int  game_enemy_count(void)    { return enemy_count_alive(); }
+vec3 game_enemy_position(int i) { return enemy_position(i); }
+int  game_enemy_alive(int i)   { return enemy_alive(i); }
+
 
 static mat4 build_aircraft_model(void) {
     mat4 m;

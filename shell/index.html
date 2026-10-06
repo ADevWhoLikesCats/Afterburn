@@ -132,6 +132,90 @@
     }
     </style>
 
+    <style>
+    #lock-box {
+        position: absolute;
+        pointer-events: none;
+        border: 2px solid #ff3333;
+        box-sizing: border-box;
+    }
+    #lock-box.hidden { display: none; }
+    #lock-box.locked {
+        border-color: #33ff55;
+        box-shadow: 0 0 12px #33ff55;
+    }
+    #lock-box.acquiring { border-style: dashed; }
+    #lock-box::before {
+        content: "";
+        position: absolute;
+        top: 50%; left: 50%;
+        width: 6px; height: 6px;
+        margin: -3px 0 0 -3px;
+        background: #ff3333;
+        border-radius: 50%;
+    }
+    #lock-box.locked::before { background: #33ff55; }
+    #lock-text {
+        position: absolute;
+        top: -18px; left: 0;
+        width: 100%;
+        text-align: center;
+        font-family: monospace;
+        font-size: 11px;
+        color: #ff3333;
+        letter-spacing: 1px;
+        white-space: nowrap;
+    }
+    #lock-box.locked #lock-text { color: #33ff55; }
+
+    #enemy-arrow {
+        position: absolute;
+        pointer-events: none;
+        width: 30px;
+        height: 30px;
+        margin-left: -15px;
+        margin-top: -15px;
+    }
+    #enemy-arrow.hidden { display: none; }
+    .arrow-shape {
+        width: 0; height: 0;
+        border-left: 8px solid transparent;
+        border-right: 8px solid transparent;
+        border-bottom: 18px solid #ff8833;
+        margin: 6px auto 0;
+        filter: drop-shadow(0 0 4px #ff8833);
+        transform-origin: center 15px;
+    }
+    #enemy-arrow-dist {
+        position: absolute;
+        top: 22px; left: 0;
+        width: 100%;
+        text-align: center;
+        font-family: monospace;
+        font-size: 10px;
+        color: #ff8833;
+        text-shadow: 0 0 4px #000;
+    }
+
+    #hud-missiles {
+        position: absolute;
+        right: 20px;
+        bottom: 20px;
+        font-family: monospace;
+        font-size: 14px;
+        color: #33ff55;
+        text-shadow: 0 0 4px #000;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+    .missile-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+    }
+    .missile-label { opacity: 0.7; }
+    </style>
 </head>
 <body>
   <canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas>
@@ -187,5 +271,29 @@
     };
   </script>
   {{{ SCRIPT }}}
+
+    <!-- Enemy lock reticle -->
+    <div id="lock-box" class="hidden">
+        <div id="lock-text">SEEK</div>
+    </div>
+
+    <!-- Off-screen enemy marker -->
+    <div id="enemy-arrow" class="hidden">
+        <div class="arrow-shape"></div>
+        <div id="enemy-arrow-dist">0m</div>
+    </div>
+
+    <!-- Missile counters -->
+    <div id="hud-missiles">
+        <span class="missile-row">
+            <span class="missile-label">AIM-9</span>
+            <span id="hud-track-count" class="missile-count">6</span>
+        </span>
+        <span class="missile-row">
+            <span class="missile-label">RKT</span>
+            <span id="hud-burn-count" class="missile-count">6</span>
+        </span>
+    </div>
+
 </body>
 </html>
