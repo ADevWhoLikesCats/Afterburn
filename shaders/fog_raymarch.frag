@@ -15,6 +15,8 @@ uniform vec2      uFullResolution;  // full-res canvas size
 uniform vec2      uHalfResolution;  // half-res fog size
 uniform float     uFogDensity;
 uniform float     uFogHeightFall;
+uniform float     uCloudCenterY;
+uniform float     uCloudThickness;
 uniform float     uFogMaxDist;
 uniform float     uFogSteps;
 uniform float     uSunScatter;
@@ -102,9 +104,10 @@ void main() {
 
         vec3 pos = uCamPos + ray_dir * t;
 
-        // Height-based density: denser near the ground
-        float heightFactor = exp(-uFogHeightFall * max(pos.y, 0.0));
-        float density = uFogDensity * heightFactor;
+        // Cloud-layer density: Gaussian band centered at uCloudCenterY.
+        // Dense inside the layer, thin above and below.
+        float bandDist = (pos.y - uCloudCenterY) / uCloudThickness;
+        float density = uFogDensity * exp(-bandDist * bandDist);
 
         // Sun visibility at this point
         float shadow = shadow_at(pos, NdotL_view);

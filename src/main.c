@@ -805,37 +805,6 @@ static void frame(void) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     draw_car_into_fb(g_scene_fb.width, g_scene_fb.height, cam);
 
-    /* Draw contrails into the scene FB, after the jet. This keeps their
-       GL state from leaking into the jet's per-mesh draw calls. */
-    if (g_trails_initialized) {
-        /* Same view as draw_car_into_fb so the trails project to the
-           same screen position as the jet. */
-        vec3 up_t = v3(0,1,0);
-        mat4 view_t = m4_look_at(cam, cam_target, up_t);
-        mat4 proj_t = m4_perspective(50.0f * 3.14159265f / 180.0f,
-                                     (float)g_scene_fb.width / (float)g_scene_fb.height,
-                                     0.1f, 200.0f);
-        mat4 vp_t = m4_mul(proj_t, view_t);
-        {
-            static int fr = 0;
-            if (fr++ < 3) printf("[frame] &g_trail_left=%p prog=%u\n",
-                                  (void*)g_trail_left, g_trail_left->prog);
-        }
-        trail_render(g_trail_left,  vp_t, cam, 0.35f);
-        trail_render(g_trail_right, vp_t, cam, 0.35f);
-    }
-
-    {
-        mat4 g_view = m4_look_at(cam, cam_target, v3(0, 1, 0));
-        mat4 g_proj = m4_perspective(50.0f * 3.14159265f / 180.0f,
-                                     (float)g_scene_fb.width / (float)g_scene_fb.height,
-                                     0.1f, 200.0f);
-        mat4 g_vp = m4_mul(g_proj, g_view);
-        gun_render(&g_gun, g_vp, cam);
-    }
-
-    /* Sky pass (AFTER scene, so the scene doesn't erase it) */
-    /* Sky background pass */
     if (g_frame_index < 3) {
         /* [sky] check disabled */}
     if (g_hdr_env.valid && g_sky_pass.prog) {
@@ -920,6 +889,37 @@ static void frame(void) {
         glEnable(GL_CULL_FACE);
     }
     check_gl_errors("scene render");
+    /* Draw contrails into the scene FB, after the jet. This keeps their
+       GL state from leaking into the jet's per-mesh draw calls. */
+    if (g_trails_initialized) {
+        /* Same view as draw_car_into_fb so the trails project to the
+           same screen position as the jet. */
+        vec3 up_t = v3(0,1,0);
+        mat4 view_t = m4_look_at(cam, cam_target, up_t);
+        mat4 proj_t = m4_perspective(50.0f * 3.14159265f / 180.0f,
+                                     (float)g_scene_fb.width / (float)g_scene_fb.height,
+                                     0.1f, 200.0f);
+        mat4 vp_t = m4_mul(proj_t, view_t);
+        {
+            static int fr = 0;
+            if (fr++ < 3) printf("[frame] &g_trail_left=%p prog=%u\n",
+                                  (void*)g_trail_left, g_trail_left->prog);
+        }
+        trail_render(g_trail_left,  vp_t, cam, 0.35f);
+        trail_render(g_trail_right, vp_t, cam, 0.35f);
+    }
+
+    {
+        mat4 g_view = m4_look_at(cam, cam_target, v3(0, 1, 0));
+        mat4 g_proj = m4_perspective(50.0f * 3.14159265f / 180.0f,
+                                     (float)g_scene_fb.width / (float)g_scene_fb.height,
+                                     0.1f, 200.0f);
+        mat4 g_vp = m4_mul(g_proj, g_view);
+        gun_render(&g_gun, g_vp, cam);
+    }
+
+    /* Sky pass (AFTER scene, so the scene doesn't erase it) */
+    /* Sky background pass */
 
     /* SSAO pass: compute ambient occlusion from scene depth */
     {
@@ -1065,11 +1065,13 @@ static void frame(void) {
         pass_set_vec2(&g_fog_raymarch_pass, "uFullResolution", full_res);
         pass_set_vec2(&g_fog_raymarch_pass, "uHalfResolution", half_res);
 
-        pass_set_f32(&g_fog_raymarch_pass, "uFogDensity",     0.06f);
-        pass_set_f32(&g_fog_raymarch_pass, "uFogHeightFall",  0.25f);
-        pass_set_f32(&g_fog_raymarch_pass, "uFogMaxDist",     60.0f);
-        pass_set_f32(&g_fog_raymarch_pass, "uFogSteps",       32.0f);
-        pass_set_f32(&g_fog_raymarch_pass, "uSunScatter",     0.7f);
+        pass_set_f32(&g_fog_raymarch_pass, "uCloudCenterY",   120.0f);
+        pass_set_f32(&g_fog_raymarch_pass, "uCloudThickness", 60.0f);
+        pass_set_f32(&g_fog_raymarch_pass, "uFogDensity",     0.02f);
+        pass_set_f32(&g_fog_raymarch_pass, "uFogHeightFall",  0.0f);
+        pass_set_f32(&g_fog_raymarch_pass, "uFogMaxDist",     400.0f);
+        pass_set_f32(&g_fog_raymarch_pass, "uFogSteps",       64.0f);
+        pass_set_f32(&g_fog_raymarch_pass, "uSunScatter",     0.8f);
         pass_set_f32(&g_fog_raymarch_pass, "uAmbientScatter", 0.15f);
 
         glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -1109,7 +1111,7 @@ static void frame(void) {
     check_gl_errors("after pass_use");
 
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, g_scene_fb.color);
+        glBindTexture(GL_TEXTURE_2D, g_fog_composited_fb.color);
         pass_set_i32(&g_ssr_pass, "uSceneColor", 0);
 
         glActiveTexture(GL_TEXTURE1);
@@ -1179,7 +1181,7 @@ static void frame(void) {
     check_gl_errors("after pass_use");
 
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, g_scene_fb.color);
+        glBindTexture(GL_TEXTURE_2D, g_fog_composited_fb.color);
         pass_set_i32(&g_ssr_composite_pass, "uSceneColor", 0);
 
         glActiveTexture(GL_TEXTURE1);
