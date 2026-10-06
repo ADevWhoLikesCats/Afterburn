@@ -1,18 +1,16 @@
 #ifndef MESH_H
 #define MESH_H
 
-#include <GLES3/gl3.h>
+#include <bgfx/c99/bgfx.h>
 #include "math3d.h"
 
 typedef struct {
-    /* Textures */
-    GLuint tex_basecolor;
-    GLuint tex_normal;
-    GLuint tex_mr;         /* G=roughness, B=metalness */
-    GLuint tex_emissive;
-    GLuint tex_occlusion;
+    bgfx_texture_handle_t tex_basecolor;
+    bgfx_texture_handle_t tex_normal;
+    bgfx_texture_handle_t tex_mr;
+    bgfx_texture_handle_t tex_emissive;
+    bgfx_texture_handle_t tex_occlusion;
 
-    /* Factors from glTF */
     vec3  basecolor_factor;
     float metallic_factor;
     float roughness_factor;
@@ -30,35 +28,33 @@ typedef struct {
 } Material;
 
 typedef struct {
-    GLuint vao;
-    GLuint vbo;
-    GLuint ebo;
-    GLuint index_count;
+    bgfx_vertex_buffer_handle_t vb;
+    bgfx_index_buffer_handle_t  ib;
+    uint32_t index_count;
+    int      use_16bit_indices;
     Material material;
-
-    /* Model transform for this primitive (its node's world matrix) */
-    mat4 model;
+    mat4     model;
 } Mesh;
 
 typedef struct {
     Mesh*   meshes;
     int     count;
-    /* Bounding info for auto-scaling */
     vec3    min_bb;
     vec3    max_bb;
 } Model;
 
-/* Load a .glb file from the virtual FS path. */
 Model model_load_glb(const char* path);
 void  model_destroy(Model* m);
 
-/* Compute overall bounding box center and extent. */
 vec3 model_center(Model* m);
 vec3 model_extent(Model* m);
 
-/* CPU-side triangle data populated by model_load_glb (for SG bake) */
 extern float* g_mesh_cpu_tris;
 extern float* g_mesh_cpu_albedos;
 extern int    g_mesh_cpu_tri_count;
+
+/* The bgfx VertexLayout used for all engine meshes.
+   Position (vec3), Normal (vec3), UV (vec2), Tangent (vec4). */
+const bgfx_vertex_layout_t* mesh_vertex_layout(void);
 
 #endif
