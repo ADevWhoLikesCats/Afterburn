@@ -31,7 +31,7 @@ void enemy_init_all(void) {
         float t = e->phase;
         float A = 900.0f, B = 450.0f;
         e->position = v3(A * sinf(e->omega * t),
-                         350.0f + 60.0f * sinf(2.0f * e->omega * t),
+                         60.0f + 20.0f * sinf(2.0f * e->omega * t),
                          B * sinf(2.0f * e->omega * t));
         e->forward  = v3(1, 0, 0);
         e->up       = v3(0, 1, 0);
