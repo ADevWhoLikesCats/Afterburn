@@ -1,6 +1,6 @@
-#include <bgfx_shader.sh>
+$input a_position
 
-layout(location = 0) in vec3 a_position;
+#include <bgfx_shader.sh>
 
 uniform mat4 u_lightVP;
 uniform mat4 u_modelMat;

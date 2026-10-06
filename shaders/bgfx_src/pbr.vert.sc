@@ -1,21 +1,12 @@
-#include <bgfx_shader.sh>
+$input a_position, a_normal, a_texcoord0, a_tangent
+$output v_worldPos, v_normal, v_uv, v_tangent, v_bitangent, v_lightSpacePos
 
-layout(location = 0) in vec3 a_position;
-layout(location = 1) in vec3 a_normal;
-layout(location = 2) in vec2 a_texcoord0;
-layout(location = 3) in vec4 a_tangent;
+#include <bgfx_shader.sh>
 
 uniform mat4 u_modelMat;
 uniform mat4 u_engineViewProj;
 uniform mat4 u_lightVPMat;
 uniform mat4 u_normalMat;
-
-out vec3 v_worldPos;
-out vec3 v_normal;
-out vec2 v_uv;
-out vec3 v_tangent;
-out vec3 v_bitangent;
-out vec4 v_lightSpacePos;
 
 void main() {
     vec4 worldPos = mul(u_modelMat, vec4(a_position, 1.0));
