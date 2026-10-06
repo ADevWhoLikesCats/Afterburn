@@ -18,11 +18,16 @@
 #include "tri_grid.h"
 #include "bloom.h"
 #include "hdr_env.h"
+#include "trail.h"
 #include "game.h"
 
 #define CAR_PATH "/assets/model.glb"
 
 static GLuint prog;
+
+static Trail* g_trail_left  = NULL;
+static Trail* g_trail_right = NULL;
+static int   g_trails_initialized = 0;
 
 GLuint game_pbr_prog(void) { return prog; }
 static GLint  u_model, u_viewproj, u_normalmat;
@@ -376,7 +381,7 @@ static void init(void) {
 
     /* Ground plane at the car's bottom Y */
     float ground_y = g_car.min_bb.y * scale - c.y * scale - 0.02f;
-    g_ground = ground_create(ground_y, 15.0f);
+    g_ground = ground_create(ground_y, 10000.0f);
     printf("=== before sky pass creation ===\n");
     for (int _k = 0; _k < 3; ++_k) {
         GLuint _test = glCreateProgram();
@@ -483,6 +488,14 @@ static void init(void) {
                                   light_dir_bake, light_color, 3.0f);
         printf("[bake] SG bake pass: %.0f ms\n", emscripten_get_now() - _t_bake);
     }
+
+    g_trail_left  = malloc(sizeof(Trail));
+    g_trail_right = malloc(sizeof(Trail));
+    trail_create(g_trail_left);
+    trail_create(g_trail_right);
+    g_trails_initialized = 1;
+    printf("[trail] initialized: left.prog=%u right.prog=%u\n",
+           g_trail_left->prog, g_trail_right->prog);
 
     sync_canvas_size();
 
@@ -664,6 +677,7 @@ static void draw_car_into_fb(int w, int h, vec3 cam) {
         glEnable(GL_CULL_FACE);
     }
 
+
     game_render(w, h);
 
     glEnable(GL_CULL_FACE);
@@ -687,6 +701,26 @@ static void frame(void) {
     t_prev = t;
 
     game_update(dt);
+    game_update_wingtips();
+    if (g_trails_initialized) {
+        /* Push every 6th frame. The ring buffer holds 256 points, so
+           this gives ~25 seconds of trail at 60 fps. */
+        static int push_div = 0;
+        if ((push_div++ % 1) == 0) {
+            trail_push(g_trail_left,  game_wingtip_left());
+            trail_push(g_trail_right, game_wingtip_right());
+        }
+    }
+    {
+        static int dbg_wt = 0;
+        if (dbg_wt++ % 60 == 0) {
+            vec3 wl = game_wingtip_left();
+            vec3 wr = game_wingtip_right();
+            vec3 d  = v3_sub(wl, wr);
+            printf("[wt] L=(%.2f,%.2f,%.2f) R=(%.2f,%.2f,%.2f) span=%.2f\n",
+                   wl.x, wl.y, wl.z, wr.x, wr.y, wr.z, v3_len(d));
+        }
+    }
     game_prepare_transform();
 
     vec3 cam = game_ready() ? game_camera_pos() : v3(0.0f, 1.5f, 4.0f);
@@ -731,15 +765,33 @@ static void frame(void) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     draw_car_into_fb(g_scene_fb.width, g_scene_fb.height, cam);
 
+    /* Draw contrails into the scene FB, after the jet. This keeps their
+       GL state from leaking into the jet's per-mesh draw calls. */
+    if (g_trails_initialized) {
+        /* Same view as draw_car_into_fb so the trails project to the
+           same screen position as the jet. */
+        vec3 up_t = v3(0,1,0);
+        mat4 view_t = m4_look_at(cam, cam_target, up_t);
+        mat4 proj_t = m4_perspective(50.0f * 3.14159265f / 180.0f,
+                                     (float)g_scene_fb.width / (float)g_scene_fb.height,
+                                     0.1f, 200.0f);
+        mat4 vp_t = m4_mul(proj_t, view_t);
+        {
+            static int fr = 0;
+            if (fr++ < 3) printf("[frame] &g_trail_left=%p prog=%u\n",
+                                  (void*)g_trail_left, g_trail_left->prog);
+        }
+        trail_render(g_trail_left,  vp_t, cam, 0.001);
+        trail_render(g_trail_right, vp_t, cam, 0.001);
+    }
+
+
     /* Sky pass (AFTER scene, so the scene doesn't erase it) */
     /* Sky background pass */
     if (g_frame_index < 3) {
-        printf("[sky] check: valid=%d prog=%u fbo=%u color=%u depth=%u\n",
-               g_hdr_env.valid, g_sky_pass.prog,
-               g_scene_fb.fbo, g_scene_fb.color, g_scene_fb.depth);
-    }
+        /* [sky] check disabled */}
     if (g_hdr_env.valid && g_sky_pass.prog) {
-        printf("[sky] running: hdr_tex=%u prog=%u\n", g_hdr_env.tex, g_sky_pass.prog);
+        /* printf("[sky] running: hdr_tex=%u prog=%u\n", g_hdr_env.tex, g_sky_pass.prog); */
         fb_bind(&g_scene_fb);
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LEQUAL);
@@ -803,16 +855,14 @@ static void frame(void) {
             glGetProgramiv(g_sky_pass.prog, GL_LINK_STATUS, &_linked);
             GLenum _fb = glCheckFramebufferStatus(GL_FRAMEBUFFER);
             GLenum _pre = glGetError();
-            printf("[sky] linked=%d prog=%u vao=%u fb_status=0x%04X pre_err=0x%04X\n",
-                   _linked, g_sky_pass.prog, g_sky_pass.vao, _fb, _pre);
-            while (glGetError() != GL_NO_ERROR) {}
+            /* [sky] linked disabled */while (glGetError() != GL_NO_ERROR) {}
         }
         
         glDrawArrays(GL_TRIANGLES, 0, 3);
         {
             GLenum _post = glGetError();
             if (_post != GL_NO_ERROR) {
-                printf("[sky] error AFTER draw: 0x%04X\n", _post);
+                /* printf("[sky] error AFTER draw: 0x%04X\n", _post); */
                 while (glGetError() != GL_NO_ERROR) {}
             }
         }
@@ -1438,6 +1488,8 @@ int main(void) {
         g_sh.project.prog, g_sh.reconstruct.prog, g_sg.fit.prog);
     EM_ASM({ alert(UTF8ToString($0)); }, _msg);
 
+    /* No cleanup needed — Emscripten shuts the process down when the tab closes.
+       Freeing the trails here would break the main loop, which runs forever. */
     emscripten_set_main_loop(frame, 0, 1);
     return 0;
 }

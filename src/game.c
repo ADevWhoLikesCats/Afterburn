@@ -49,6 +49,7 @@ static float g_roll_axis  = 0.0f;
 #define MOUSE_ROLL_SENS  0.0055f
 
 static mat4 build_aircraft_model(void);
+static void compute_wingtips(void);
 
 void game_key_down(const char* key) {
     switch (key[0]) {
@@ -144,6 +145,7 @@ void game_init(void) {
     g_jet.speed    = g_jet.length * 6.0f;
 
     g_jet_loaded = 1;
+    compute_wingtips();
     printf("[game] jet loaded: length=%.2f\n", g_jet.length);
     g_probe_grid_offset = v3_sub(g_jet.position, v3(0.0f, 2.0f, 0.0f));
     printf("[game] probe grid offset initialized to (%.1f, %.1f, %.1f)\n",
@@ -264,7 +266,61 @@ void game_prepare_transform(void) {
 
 Mesh* game_jet_meshes(void)    { return g_jet_model.meshes; }
 int   game_jet_mesh_count(void){ return g_jet_loaded ? g_jet_model.count : 0; }
+
+/* ------------------------------------------------------------------ */
+/* Wingtip positions                                                   */
+/* ------------------------------------------------------------------ */
+
+static vec3 g_wingtip_left_local  = { 0, 0, 0 };
+static vec3 g_wingtip_right_local = { 0, 0, 0 };
+static vec3 g_wingtip_left_world  = { 0, 0, 0 };
+static vec3 g_wingtip_right_world = { 0, 0, 0 };
+static int  g_wingtips_initialized = 0;
+
+static vec3 xform_point(mat4 m, vec3 p) {
+    return v3(
+        m.m[0]*p.x + m.m[4]*p.y + m.m[8]*p.z  + m.m[12],
+        m.m[1]*p.x + m.m[5]*p.y + m.m[9]*p.z  + m.m[13],
+        m.m[2]*p.x + m.m[6]*p.y + m.m[10]*p.z + m.m[14]
+    );
+}
+
+/* Compute the local-space wingtip offsets from the model's bounding box.
+   Assumes wingspan is along Z (F-16 model: nose along -X, up along +Y).
+   The offsets are in the model's local space, before auto-scaling. */
+static void compute_wingtips(void) {
+    vec3 e = model_extent(&g_jet_model);
+    vec3 c = model_center(&g_jet_model);
+
+    float half_span = e.z * 0.5f;
+    float wing_y    = c.y - e.y * 0.05f;   /* slight bias downward */
+    float wing_x    = c.x;
+
+    g_wingtip_left_local  = v3(wing_x, wing_y, c.z - half_span);
+    g_wingtip_right_local = v3(wing_x, wing_y, c.z + half_span);
+    g_wingtips_initialized = 1;
+
+    printf("[wingtip] bbox extent=(%.3f,%.3f,%.3f) center=(%.3f,%.3f,%.3f)\n",
+           e.x, e.y, e.z, c.x, c.y, c.z);
+    printf("[wingtip] local L=(%.3f,%.3f,%.3f) R=(%.3f,%.3f,%.3f)\n",
+           g_wingtip_left_local.x,  g_wingtip_left_local.y,  g_wingtip_left_local.z,
+           g_wingtip_right_local.x, g_wingtip_right_local.y, g_wingtip_right_local.z);
+}
+
+void game_update_wingtips(void) {
+    if (!g_wingtips_initialized) return;
+    /* Same transform the renderer uses to place the jet's meshes. */
+    mat4 placement = m4_mul(build_aircraft_model(), g_jet_base_transform);
+    g_wingtip_left_world  = xform_point(placement, g_wingtip_left_local);
+    g_wingtip_right_world = xform_point(placement, g_wingtip_right_local);
+}
+
+vec3 game_wingtip_left(void)  { return g_wingtip_left_world; }
+vec3 game_wingtip_right(void) { return g_wingtip_right_world; }
+
 vec3  game_jet_position(void)  { return g_jet.position; }
+vec3  game_jet_right(void)     { return g_jet.right; }
+vec3  game_jet_up(void)        { return g_jet.up; }
 
 vec3 game_probe_grid_offset(void) { return g_probe_grid_offset; }
 vec3 game_camera_pos(void)    { return g_cam_pos; }

@@ -14,6 +14,8 @@ int   game_jet_mesh_count(void);
 vec3  game_jet_position(void);
 vec3 game_probe_grid_offset(void);
 vec3 game_camera_pos(void);
+vec3 game_wingtip_left(void);
+vec3 game_wingtip_right(void);
 vec3 game_camera_target(void);
 int  game_ready(void);
 
@@ -24,5 +26,9 @@ void game_key_up(const char* key);
 void game_mouse_move(double x, double y);
 /* Called when pointer lock is acquired / released. */
 void game_set_pointer_locked(int locked);
+
+void game_update_wingtips(void);
+vec3 game_wingtip_left(void);
+vec3 game_wingtip_right(void);
 
 #endif
