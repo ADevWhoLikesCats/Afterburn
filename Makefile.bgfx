@@ -1,0 +1,115 @@
+.DEFAULT_GOAL := all
+
+.DEFAULT_GOAL := all
+
+# ------------------------------------------------------------------
+# bgfx port Makefile
+# Builds bgfx-linked tests and (eventually) the engine itself.
+# ------------------------------------------------------------------
+
+BG          := third_party/bgfx.cmake
+BGFX_INC    := $(BG)/bgfx/include
+BX_INC      := $(BG)/bx/include
+BIMG_INC    := $(BG)/bimg/include
+KHR_INC     := $(BG)/bgfx/3rdparty/khronos
+SHADERC_INC := $(BG)/bgfx/src
+
+BGFX_LIB    := $(BG)/build/cmake/bgfx
+BX_LIB      := $(BG)/build/cmake/bx
+BIMG_LIB    := $(BG)/build/cmake/bimg
+
+CC          := gcc
+CXX         := g++
+CFLAGS      := -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter
+INC         := -Isrc -Ithird_party -I$(BGFX_INC) -I$(BX_INC) -I$(BIMG_INC) -I$(KHR_INC)
+
+LDFLAGS     := -L$(BGFX_LIB) -L$(BX_LIB) -L$(BIMG_LIB)
+LDLIBS      := -Wl,--start-group \
+               -lbgfx -lbx -lbimg -lbimg_decode -lbimg_encode \
+               -lglslang -lspirv-cross -lspirv-opt -ll-smash -ltint \
+               -Wl,--end-group \
+               -lGL -lX11 -lXrandr -lpthread -ldl -lglfw
+
+# ------------------------------------------------------------------
+# Sources
+# ------------------------------------------------------------------
+
+# Modules already ported to bgfx
+PORTED      := src/pass.c src/framebuffer.c src/texture.c src/hdr_env.c
+
+# Stubs we still need
+STUBS       := src/stb_image_impl.c
+
+# GL-side modules (kept for reference, not linked into bgfx tests)
+# All are .c files under src/ except the ported ones.
+
+# ------------------------------------------------------------------
+# Tests
+# ------------------------------------------------------------------
+
+TESTS := bgfx_smoke bgfx_blit_test bgfx_pass_test bgfx_fb_test bgfx_sky_test bgfx_pipeline_test
+
+# Objects: every test gets the ported modules + stubs + its own object.
+# We use a pattern rule so adding a new test just needs the .c file.
+
+# Shared objects used by all tests
+SHARED_OBJS := pass.o framebuffer.o texture.o hdr_env.o asset.o stb_image_impl.o
+
+# ------------------------------------------------------------------
+# Rules
+# ------------------------------------------------------------------
+
+%.o: src/%.c
+	$(CC) $(CFLAGS) $(INC) -c $< -o $@
+
+%.o: %.c
+	$(CC) $(CFLAGS) $(INC) -c $< -o $@
+
+# Link each test
+$(TESTS): %: %.o $(SHARED_OBJS)
+	$(CXX) $^ -o $@ $(LDFLAGS) $(LDLIBS)
+
+# ------------------------------------------------------------------
+# Shader compilation
+# ------------------------------------------------------------------
+
+SHADERC := shaderc
+
+SHADER_SRC := $(wildcard shaders/bgfx_src/*.vert.sc) \
+              $(wildcard shaders/bgfx_src/*.frag.sc)
+
+# For each shader source, generate two outputs: gl and webgl.
+define shader_rule
+shaders/out/gl/$(notdir $(basename $(1))).bin: $(1)
+	@mkdir -p shaders/out/gl
+	$(SHADERC) -f $(1) -o $$@ \
+	    --platform linux --profile 430 \
+	    --type $(if $(findstring .vert,$(1)),vertex,fragment) \
+	    -i $(SHADERC_INC)
+shaders/out/webgl/$(notdir $(basename $(1))).bin: $(1)
+	@mkdir -p shaders/out/webgl
+	$(SHADERC) -f $(1) -o $$@ \
+	    --platform asm.js --profile 300_es \
+	    --type $(if $(findstring .vert,$(1)),vertex,fragment) \
+	    -i $(SHADERC_INC)
+endef
+
+$(foreach s,$(SHADER_SRC),$(eval $(call shader_rule,$(s))))
+
+SHADER_OUT := $(foreach s,$(SHADER_SRC), \
+    shaders/out/gl/$(notdir $(basename $(s))).bin \
+    shaders/out/webgl/$(notdir $(basename $(s))).bin)
+
+shaders: $(SHADER_OUT)
+
+# ------------------------------------------------------------------
+# Housekeeping
+# ------------------------------------------------------------------
+
+.PHONY: all clean shaders
+
+all: $(TESTS) shaders
+
+clean:
+	rm -f *.o $(TESTS)
+	rm -rf shaders/out

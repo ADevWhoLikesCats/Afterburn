@@ -113,6 +113,7 @@ void fb_bind_backbuffer(bgfx_view_id_t view, int w, int h) {
     bgfx_frame_buffer_handle_t no_fb = { UINT16_MAX };
     bgfx_set_view_frame_buffer(view, no_fb);
     bgfx_set_view_rect(view, 0, 0, (uint16_t)w, (uint16_t)h, 0.0f, 1.0f);
+    bgfx_set_view_rect(view, 0, 0, (uint16_t)w, (uint16_t)h, 0.0f, 1.0f);
 }
 
 bgfx_texture_handle_t fb_attachment(Framebuffer* fb, int index) {
