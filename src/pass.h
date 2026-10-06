@@ -1,17 +1,18 @@
 #ifndef PASS_H
 #define PASS_H
 
-#include <GLES3/gl3.h>
+#include <bgfx/c99/bgfx.h>
 #include "math3d.h"
 
 typedef struct {
-    GLuint prog;
-    GLuint vao;    /* empty VAO — geometry comes from gl_VertexID */
+    bgfx_program_handle_t prog;
+    bgfx_shader_handle_t  vs;
+    bgfx_shader_handle_t  fs;
+    int                   valid;
 } Pass;
 
-Pass pass_create(const char* vert_path, const char* frag_path);
+Pass pass_create_from_bin(const char* vert_bin_path, const char* frag_bin_path);
 void pass_destroy(Pass* p);
-
 void pass_use(Pass* p);
 void pass_draw(Pass* p, int width, int height);
 
