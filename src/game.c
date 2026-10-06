@@ -235,7 +235,7 @@ void game_update(float dt) {
     /* Normalize to -1..1. The mouse axis is per-frame pulses; scale up. */
     float pitch_in = clampf(g_pitch_axis * 12.0f, -1.0f, 1.0f);
     float roll_in  = clampf(g_roll_axis  * 12.0f, -1.0f, 1.0f);
-    float yaw_in   = (float)(g_key_a - g_key_d);  /* A = nose left, D = nose right */
+    float yaw_in   = (float)(g_key_a - g_key_d);   /* A = left, D = right */   /* rudder is unused for now */
 
     /* Throttle: W increases, S decreases. Persistent. */
     if (g_key_w) g_jet.throttle += 0.6f * dt;
@@ -324,12 +324,12 @@ void game_update(float dt) {
        determines how fast we get there. */
     float target_pitch_rate = pitch_in * 1.6f * q_factor;   /* rad/sec */
     float target_roll_rate  = roll_in  * 4.5f * q_factor;
-    float target_yaw_rate   = yaw_in   * 2.5f * q_factor;   /* harsh rudder */
+    float target_yaw_rate   = yaw_in   * 2.0f * q_factor;   /* hard rudder */
 
     /* Aerodynamic damping: the air resists rotation. */
     float pitch_damp = 3.0f;
     float roll_damp  = 4.0f;
-    float yaw_damp   = 6.0f;   /* snappier rudder response */
+    float yaw_damp   = 5.0f;
 
     /* Torque = inertia * angular_acceleration. Player commands angular
        velocity; damping pulls current velocity toward target. */
@@ -358,6 +358,30 @@ void game_update(float dt) {
     g_jet.right   = v3_norm(v3_cross(g_jet.forward, g_jet.up));
     g_jet.up      = v3_cross(g_jet.right, g_jet.forward);
 
+    /* ---------- 5a. Velocity follows the nose when yawing ---------- */
+    /* Pure yaw rotates the nose but leaves the trajectory unchanged,
+       so the jet appears to "look backwards" while still flying its
+       old path. To make the rudder act like a steering wheel, swing
+       the velocity vector toward forward at a rate proportional to
+       the yaw input. This is what arcade flight games do. */
+    {
+        float yaw_abs = fabsf(yaw_in);
+        if (yaw_abs > 1.0f) yaw_abs = 1.0f;
+        if (yaw_abs > 0.01f && speed_wu > 10.0f) {
+            vec3 vel_dir = v3_norm(g_jet.velocity);
+            /* Signed angle from velocity to forward, about world up. */
+            vec3 up_w = v3(0, 1, 0);
+            vec3 cross_vf = v3_cross(vel_dir, g_jet.forward);
+            float sin_a = v3_dot(cross_vf, up_w);
+            float cos_a = v3_dot(vel_dir, g_jet.forward);
+            float ang = atan2f(sin_a, cos_a);
+            /* Swing velocity toward forward at up to ~2.5 rad/s. */
+            float swing = 2.5f * yaw_abs;
+            float delta = clampf(ang, -swing * dt, swing * dt);
+            g_jet.velocity = rotate_axis(g_jet.velocity, up_w, delta);
+        }
+    }
+
     /* ---------- 5b. Weathercock stability ---------- */
     /* The tailplane pulls the nose toward the velocity vector. Without
        this, pitch input causes AoA to run away. */
@@ -367,7 +391,7 @@ void game_update(float dt) {
         float align_mag = v3_len(align_axis);
         if (align_mag > 1e-4f) {
             float align_angle = asinf(clampf(align_mag, 0.0f, 1.0f));
-            float restore_rate = 5.0f * align_angle;
+            float yaw_abs = fabsf(yaw_in); if (yaw_abs > 1.0f) yaw_abs = 1.0f; float wc_scale = 1.0f - yaw_abs * 0.85f; float restore_rate = 5.0f * align_angle * wc_scale;
             vec3 axis = v3_scale(align_axis, 1.0f / align_mag);
             g_jet.forward = rotate_axis(g_jet.forward, axis, restore_rate * dt);
             g_jet.up      = rotate_axis(g_jet.up,      axis, restore_rate * dt);
