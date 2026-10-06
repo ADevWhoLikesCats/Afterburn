@@ -2,6 +2,7 @@ $input v_worldPos, v_normal, v_uv, v_tangent, v_bitangent, v_lightSpacePos
 
 #include <bgfx_shader.sh>
 
+
 SAMPLER2D(s_sh, 0);
 SAMPLER2D(s_probeSGs, 1);
 SAMPLER2D(s_ssrColor, 2);
@@ -134,6 +135,7 @@ vec3 evalSpecular(vec3 F0, float rough, float NdotV, float NdotL, float NdotH, f
 }
 
 void main() {
+    /* MAGENTA DEBUG */ gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); return;
     vec3 albedo = u_basecolorFactor.xyz;
     if (u_hasBasecolor.x > 0.5) albedo *= texture2D(s_texBasecolor, v_uv).rgb;
 
@@ -158,6 +160,12 @@ void main() {
         nmap.xy *= u_normalScale.x;
         mat3 TBN = mat3(normalize(v_tangent), normalize(v_bitangent), N);
         N = normalize(mul(TBN, nmap));
+    }
+
+    /* DEBUG: early return with normals before anything else runs */
+    if (int(u_debugMode.x) == 7) {
+        gl_FragColor = vec4(N * 0.5 + 0.5, 1.0);
+        return;
     }
 
     vec3 V = normalize(u_camPosEngine.xyz - v_worldPos);
@@ -225,8 +233,8 @@ void main() {
     else if (dbg == 14) color = texture2D(s_gbufferAlbedo, suv).rgb;
     else if (dbg == 15) color = texture2D(s_ssgi, suv).rgb;
 
-    gl_FragData[0] = vec4(color, 1.0);
-    gl_FragData[1] = vec4(albedo, ao);
-    gl_FragData[2] = vec4(N * 0.5 + 0.5, roughness);
-    gl_FragData[3] = vec4(emissive_radiance, 1.0);
+    gl_FragColor = vec4(color, 1.0);
+    
+    
+    
 }

@@ -14,6 +14,7 @@ int   game_jet_mesh_count(void);
 vec3  game_jet_position(void);
 vec3 game_probe_grid_offset(void);
 vec3 game_camera_pos(void);
+mat4 game_jet_transform(void);
 vec3 game_camera_target(void);
 int  game_ready(void);
 

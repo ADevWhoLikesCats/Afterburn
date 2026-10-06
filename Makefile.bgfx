@@ -47,13 +47,13 @@ STUBS       := src/stb_image_impl.c
 # Tests
 # ------------------------------------------------------------------
 
-TESTS := bgfx_smoke bgfx_blit_test bgfx_pass_test bgfx_fb_test bgfx_sky_test bgfx_pipeline_test
+TESTS := main_bgfx bgfx_smoke bgfx_blit_test bgfx_pass_test bgfx_fb_test bgfx_sky_test bgfx_pipeline_test
 
 # Objects: every test gets the ported modules + stubs + its own object.
 # We use a pattern rule so adding a new test just needs the .c file.
 
 # Shared objects used by all tests
-SHARED_OBJS := pass.o framebuffer.o texture.o hdr_env.o asset.o stb_image_impl.o
+SHARED_OBJS := pass.o framebuffer.o texture.o hdr_env.o asset.o stb_image_impl.o mesh.o cgltf_impl.o game.o
 
 # ------------------------------------------------------------------
 # Rules

@@ -19,13 +19,15 @@ static int g_layout_initialized = 0;
 
 const bgfx_vertex_layout_t* mesh_vertex_layout(void) {
     if (!g_layout_initialized) {
-        bgfx_vertex_layout_begin(&g_layout, BGFX_RENDERER_TYPE_COUNT);
+        bgfx_vertex_layout_begin(&g_layout, BGFX_RENDERER_TYPE_OPENGL);
         bgfx_vertex_layout_add(&g_layout, BGFX_ATTRIB_POSITION,  3, BGFX_ATTRIB_TYPE_FLOAT, false, false);
         bgfx_vertex_layout_add(&g_layout, BGFX_ATTRIB_NORMAL,    3, BGFX_ATTRIB_TYPE_FLOAT, false, false);
         bgfx_vertex_layout_add(&g_layout, BGFX_ATTRIB_TEXCOORD0, 2, BGFX_ATTRIB_TYPE_FLOAT, false, false);
         bgfx_vertex_layout_add(&g_layout, BGFX_ATTRIB_TANGENT,   4, BGFX_ATTRIB_TYPE_FLOAT, false, false);
         bgfx_vertex_layout_end(&g_layout);
         g_layout_initialized = 1;
+
+        printf("[layout] stride=%u\n", g_layout.stride);
     }
     return &g_layout;
 }

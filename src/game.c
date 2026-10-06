@@ -1,8 +1,6 @@
 #include "game.h"
 #include <math.h>
 #include <stdio.h>
-#include <emscripten.h>
-#include <emscripten/html5.h>
 
 typedef struct {
     vec3  position;
@@ -34,7 +32,7 @@ static int g_key_w, g_key_s, g_key_a, g_key_d, g_key_r;
 static int g_pointer_locked = 0;
 
 /* Mouse state: absolute pixels + accumulated delta since last frame */
-static double g_mouse_x = 0.0, g_mouse_y = 0.0;
+
 static double g_mouse_dx = 0.0, g_mouse_dy = 0.0;
 static int    g_mouse_have_last = 0;
 
@@ -103,9 +101,9 @@ static vec3 lerp3(vec3 a, vec3 b, float t) {
 
 void game_init(void) {
     printf("[game] loading jet model\n");
-    g_jet_model = model_load_glb("/assets/model.glb");
-    if (g_jet_model.count == 0) g_jet_model = model_load_glb("/assets/jet.glb");
-    if (g_jet_model.count == 0) g_jet_model = model_load_glb("/assets/f16.glb");
+    g_jet_model = model_load_glb("assets/model.glb");
+    if (g_jet_model.count == 0) g_jet_model = model_load_glb("assets/jet.glb");
+    if (g_jet_model.count == 0) g_jet_model = model_load_glb("assets/f16.glb");
     if (g_jet_model.count == 0) {
         fprintf(stderr, "[game] no jet model found\n");
         return;
@@ -212,8 +210,8 @@ void game_update(float dt) {
     g_jet.speed = clampf(g_jet.speed, g_jet.min_speed, g_jet.max_speed);
 
     /* --- Position --- */
-    g_jet.position = v3_add(g_jet.position,
-                            v3_scale(g_jet.forward, g_jet.speed * dt));
+    /* FREEZE */
+    /* g_jet.position = v3_add(g_jet.position, v3_scale(g_jet.forward, g_jet.speed * dt)); */
 
     /* Keep the probe grid centered on the jet. The bake itself is
        local to the grid, so we only slide the world-to-grid
@@ -268,6 +266,7 @@ vec3  game_jet_position(void)  { return g_jet.position; }
 
 vec3 game_probe_grid_offset(void) { return g_probe_grid_offset; }
 vec3 game_camera_pos(void)    { return g_cam_pos; }
+mat4 game_jet_transform(void) { return build_aircraft_model(); }
 vec3 game_camera_target(void) { return g_cam_target; }
 int  game_ready(void)         { return g_jet_loaded; }
 
@@ -284,60 +283,10 @@ static mat4 build_aircraft_model(void) {
     return m;
 }
 
-extern GLuint game_pbr_prog(void);
 
 void game_render(int w, int h) {
     (void)w; (void)h;
-    if (!g_jet_loaded) return;
-
-    mat4 placement = build_aircraft_model();
-    GLuint prog = game_pbr_prog();
-    if (!prog) return;
-
-    GLint u_model            = glGetUniformLocation(prog, "uModel");
-    GLint u_normalmat        = glGetUniformLocation(prog, "uNormalMat");
-    GLint u_basecolor_factor = glGetUniformLocation(prog, "uBasecolorFactor");
-    GLint u_metallic_factor  = glGetUniformLocation(prog, "uMetallicFactor");
-    GLint u_roughness_factor = glGetUniformLocation(prog, "uRoughnessFactor");
-    GLint u_normal_scale     = glGetUniformLocation(prog, "uNormalScale");
-    GLint u_has_basecolor    = glGetUniformLocation(prog, "uHasBasecolor");
-    GLint u_has_mr           = glGetUniformLocation(prog, "uHasMR");
-    GLint u_has_normal       = glGetUniformLocation(prog, "uHasNormal");
-
-    for (int i = 0; i < g_jet_model.count; ++i) {
-        Mesh* m = &g_jet_model.meshes[i];
-        mat4 world = m->model;
-
-        float nrm[9];
-        m4_to_mat3_normal(world, nrm);
-        glUniformMatrix4fv(u_model, 1, GL_FALSE, world.m);
-        glUniformMatrix3fv(u_normalmat, 1, GL_FALSE, nrm);
-
-        glUniform3f(u_basecolor_factor,
-                    m->material.basecolor_factor.x,
-                    m->material.basecolor_factor.y,
-                    m->material.basecolor_factor.z);
-        glUniform1f(u_metallic_factor,  m->material.metallic_factor);
-        glUniform1f(u_roughness_factor, m->material.roughness_factor);
-        glUniform1f(u_normal_scale,     m->material.normal_scale);
-        glUniform1i(u_has_basecolor,    m->material.has_basecolor);
-        glUniform1i(u_has_mr,           m->material.has_mr);
-        glUniform1i(u_has_normal,       m->material.has_normal);
-
-        glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, m->material.tex_basecolor);
-        glActiveTexture(GL_TEXTURE4); glBindTexture(GL_TEXTURE_2D, m->material.tex_mr);
-        glActiveTexture(GL_TEXTURE5); glBindTexture(GL_TEXTURE_2D, m->material.tex_normal);
-        glActiveTexture(GL_TEXTURE6); glBindTexture(GL_TEXTURE_2D, m->material.tex_emissive);
-        glActiveTexture(GL_TEXTURE7); glBindTexture(GL_TEXTURE_2D, m->material.tex_occlusion);
-        glActiveTexture(GL_TEXTURE0);
-
-        if (m->material.double_sided) glDisable(GL_CULL_FACE);
-        else glEnable(GL_CULL_FACE);
-
-        glBindVertexArray(m->vao);
-        int use_16 = (m->index_count & 0x80000000) != 0;
-        GLuint count = m->index_count & 0x7FFFFFFF;
-        GLenum idx_type = use_16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
-        glDrawElements(GL_TRIANGLES, count, idx_type, 0);
-    }
+    /* In the bgfx build, main_bgfx.c drives all rendering.
+       The GL version of this function is no longer needed. */
 }
+

@@ -3,6 +3,7 @@ $output v_worldPos, v_normal, v_uv, v_tangent, v_bitangent, v_lightSpacePos
 
 #include <bgfx_shader.sh>
 
+
 uniform mat4 u_modelMat;
 uniform mat4 u_engineViewProj;
 uniform mat4 u_lightVPMat;
