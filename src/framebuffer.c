@@ -1,210 +1,127 @@
 #include "framebuffer.h"
-#include <string.h>
 #include <stdio.h>
-#include <stdlib.h>
-
-static void check_float_support(void) {
-    static int checked = 0;
-    if (checked) return;
-    checked = 1;
-    if (!glGetString(GL_EXTENSIONS)) return;
-    /* WebGL2: RGBA16F/32F as a color attachment needs EXT_color_buffer_float.
-       Linear filtering of float textures needs OES_texture_float_linear.
-       Half-float linear filtering is core in WebGL2. */
-    const char* ext = (const char*)glGetString(GL_EXTENSIONS);
-    if (!ext) return;
-    if (!strstr(ext, "EXT_color_buffer_float")) {
-        fprintf(stderr, "[fb] WARNING: EXT_color_buffer_float not advertised\n");
-    }
-}
-
 #include <string.h>
 
-static GLenum to_gl_format(FBFormat f, GLenum* internal, GLenum* type) {
-    switch (f) {
-        case FB_RGBA8:   *internal = GL_RGBA8;   *type = GL_UNSIGNED_BYTE;  return GL_RGBA;
-        case FB_RGBA16F: *internal = GL_RGBA16F; *type = GL_HALF_FLOAT;     return GL_RGBA;
-        case FB_RGBA32F: *internal = GL_RGBA32F; *type = GL_FLOAT;          return GL_RGBA;
-        case FB_R8:      *internal = GL_R8;      *type = GL_UNSIGNED_BYTE;  return GL_RED;
+static bgfx_texture_format_t to_bgfx_format(FBFormat fmt) {
+    switch (fmt) {
+        case FB_RGBA8:   return BGFX_TEXTURE_FORMAT_RGBA8;
+        case FB_RGBA16F: return BGFX_TEXTURE_FORMAT_RGBA16F;
+        case FB_RGBA32F: return BGFX_TEXTURE_FORMAT_RGBA32F;
+        case FB_R8:      return BGFX_TEXTURE_FORMAT_R8;
+        case FB_D24S8:   return BGFX_TEXTURE_FORMAT_D24S8;
     }
-    *internal = GL_RGBA8; *type = GL_UNSIGNED_BYTE; return GL_RGBA;
+    return BGFX_TEXTURE_FORMAT_RGBA8;
 }
 
-Framebuffer fb_create(int width, int height, FBFormat fmt) {
-    check_float_support();
-    Framebuffer fb = {0};
-    fb.width = width;
-    fb.height = height;
-    fb.format = fmt;
+static bgfx_texture_handle_t make_texture(int w, int h, FBFormat fmt, uint64_t flags) {
+    /* For render targets, bgfx wants BGFX_TEXTURE_RT in flags. */
+    return bgfx_create_texture_2d(
+        (uint16_t)w, (uint16_t)h, false, 1,
+        to_bgfx_format(fmt),
+        BGFX_TEXTURE_RT | flags,
+        NULL, 0);
+}
 
-    GLenum internal, type, format;
-    format = to_gl_format(fmt, &internal, &type);
+Framebuffer fb_create(int w, int h, FBFormat fmt) {
+    Framebuffer fb;
+    memset(&fb, 0, sizeof(fb));
+    fb.width = w; fb.height = h; fb.format = fmt;
+    fb.attachment_count = 1;
+    fb.owns_depth = 1;
+    fb.valid = 0;
 
-    glGenTextures(1, &fb.color);
-    glBindTexture(GL_TEXTURE_2D, fb.color);
-    glTexImage2D(GL_TEXTURE_2D, 0, internal, width, height, 0, format, type, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    fb.color = make_texture(w, h, fmt, BGFX_TEXTURE_NONE);
+    fb.depth = make_texture(w, h, FB_D24S8, BGFX_TEXTURE_NONE);
 
-    glGenRenderbuffers(1, &fb.depth);
-    glBindRenderbuffer(GL_RENDERBUFFER, fb.depth);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
-
-    glGenFramebuffers(1, &fb.fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fb.fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fb.color, 0);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, fb.depth);
-
-    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (status != GL_FRAMEBUFFER_COMPLETE) {
-        fprintf(stderr, "[fb] incomplete framebuffer (0x%04X) %dx%d fmt=%d\n",
-                status, width, height, (int)fmt);
-        abort();
+    if (fb.color.idx == UINT16_MAX || fb.depth.idx == UINT16_MAX) {
+        fprintf(stderr, "[fb] texture creation failed %dx%d\n", w, h);
+        return fb;
     }
 
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    bgfx_texture_handle_t attachments[2] = { fb.color, fb.depth };
+    fb.fbh = bgfx_create_frame_buffer_from_handles(2, attachments, false);
+    if (fb.fbh.idx == UINT16_MAX) {
+        fprintf(stderr, "[fb] fb_create failed %dx%d\n", w, h);
+        return fb;
+    }
+
+    fb.valid = 1;
+    return fb;
+}
+
+Framebuffer fb_create_with_depth_tex(int w, int h, FBFormat fmt) {
+    /* Same as fb_create, but marks depth as a separate texture we want
+       to sample from later. In bgfx this is the same creation path —
+       the difference is just that we keep the depth handle around. */
+    return fb_create(w, h, fmt);
+}
+
+Framebuffer fb_create_gbuffer(int w, int h, bgfx_texture_handle_t borrowed_depth) {
+    Framebuffer fb;
+    memset(&fb, 0, sizeof(fb));
+    fb.width = w; fb.height = h; fb.format = FB_RGBA16F;
+    fb.attachment_count = 4;
+    fb.owns_depth = 0;
+    fb.valid = 0;
+
+    fb.color  = make_texture(w, h, FB_RGBA16F, BGFX_TEXTURE_NONE);
+    fb.color1 = make_texture(w, h, FB_RGBA16F, BGFX_TEXTURE_NONE);
+    fb.color2 = make_texture(w, h, FB_RGBA16F, BGFX_TEXTURE_NONE);
+    fb.color3 = make_texture(w, h, FB_RGBA16F, BGFX_TEXTURE_NONE);
+
+    if (fb.color.idx  == UINT16_MAX || fb.color1.idx == UINT16_MAX ||
+        fb.color2.idx == UINT16_MAX || fb.color3.idx == UINT16_MAX) {
+        fprintf(stderr, "[gbuffer] texture creation failed\n");
+        return fb;
+    }
+
+    fb.depth = borrowed_depth;
+
+    bgfx_texture_handle_t attachments[5] = {
+        fb.color, fb.color1, fb.color2, fb.color3, fb.depth
+    };
+    fb.fbh = bgfx_create_frame_buffer_from_handles(5, attachments, false);
+    if (fb.fbh.idx == UINT16_MAX) {
+        fprintf(stderr, "[gbuffer] create failed\n");
+        return fb;
+    }
+
+    fb.valid = 1;
+    printf("[gbuffer] created %dx%d att0=%u att1=%u att2=%u att3=%u\n",
+           w, h, fb.color.idx, fb.color1.idx, fb.color2.idx, fb.color3.idx);
     return fb;
 }
 
 void fb_destroy(Framebuffer* fb) {
-    if (fb->color) glDeleteTextures(1, &fb->color);
-    if (fb->depth) glDeleteRenderbuffers(1, &fb->depth);
-    if (fb->fbo)   glDeleteFramebuffers(1, &fb->fbo);
-    fb->color = fb->depth = fb->fbo = 0;
+    if (!fb) return;
+    if (fb->fbh.idx && fb->fbh.idx != UINT16_MAX) bgfx_destroy_frame_buffer(fb->fbh);
+    if (fb->color.idx  && fb->color.idx  != UINT16_MAX) bgfx_destroy_texture(fb->color);
+    if (fb->color1.idx && fb->color1.idx != UINT16_MAX) bgfx_destroy_texture(fb->color1);
+    if (fb->color2.idx && fb->color2.idx != UINT16_MAX) bgfx_destroy_texture(fb->color2);
+    if (fb->color3.idx && fb->color3.idx != UINT16_MAX) bgfx_destroy_texture(fb->color3);
+    if (fb->owns_depth && fb->depth.idx && fb->depth.idx != UINT16_MAX)
+        bgfx_destroy_texture(fb->depth);
+    memset(fb, 0, sizeof(*fb));
 }
 
-void fb_bind(Framebuffer* fb) {
-    glBindFramebuffer(GL_FRAMEBUFFER, fb->fbo);
-    glViewport(0, 0, fb->width, fb->height);
+void fb_bind_view(Framebuffer* fb, bgfx_view_id_t view) {
+    bgfx_set_view_frame_buffer(view, fb->fbh);
+    bgfx_set_view_rect(view, 0, 0, (uint16_t)fb->width, (uint16_t)fb->height, 0.0f, 1.0f);
 }
 
-void fb_bind_read(Framebuffer* fb, int unit) {
-    glActiveTexture(GL_TEXTURE0 + unit);
-    glBindTexture(GL_TEXTURE_2D, fb->color);
+void fb_bind_backbuffer(bgfx_view_id_t view, int w, int h) {
+    bgfx_frame_buffer_handle_t no_fb = { UINT16_MAX };
+    bgfx_set_view_frame_buffer(view, no_fb);
+    bgfx_set_view_rect(view, 0, 0, (uint16_t)w, (uint16_t)h, 0.0f, 1.0f);
 }
 
-void fb_unbind(int screen_w, int screen_h) {
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, screen_w, screen_h);
-}
-
-
-Framebuffer fb_create_with_depth_tex(int width, int height, FBFormat fmt) {
-    check_float_support();
-    Framebuffer fb = {0};
-    fb.width = width;
-    fb.height = height;
-    fb.format = fmt;
-
-    GLenum internal, type, format;
-    format = to_gl_format(fmt, &internal, &type);
-
-    glGenTextures(1, &fb.color);
-    glBindTexture(GL_TEXTURE_2D, fb.color);
-    glTexImage2D(GL_TEXTURE_2D, 0, internal, width, height, 0, format, type, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    /* Depth texture instead of renderbuffer */
-    glGenTextures(1, &fb.depth);
-    glBindTexture(GL_TEXTURE_2D, fb.depth);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, width, height, 0,
-                 GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    glGenFramebuffers(1, &fb.fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fb.fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fb.color, 0);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, fb.depth, 0);
-
-    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (status != GL_FRAMEBUFFER_COMPLETE) {
-        fprintf(stderr, "[fb] incomplete framebuffer (0x%04X) %dx%d fmt=%d\n",
-                status, width, height, (int)fmt);
-        abort();
+bgfx_texture_handle_t fb_attachment(Framebuffer* fb, int index) {
+    switch (index) {
+        case 0: return fb->color;
+        case 1: return fb->color1;
+        case 2: return fb->color2;
+        case 3: return fb->color3;
+        case 4: return fb->depth;
+        default: { bgfx_texture_handle_t inv = { UINT16_MAX }; return inv; }
     }
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    return fb;
-}
-
-
-/* ------------------------------------------------------------------ */
-/* Multi-render-target G-buffer                                        */
-/*   attachment 0: lit scene        (RGBA16F)                          */
-/*   attachment 1: albedo           (RGBA16F)                          */
-/*   attachment 2: normal+roughness (RGBA16F)                          */
-/*   attachment 3: emissive         (RGBA16F)                          */
-/* Depth: borrowed from caller if depth_tex != 0.                     */
-/* ------------------------------------------------------------------ */
-Framebuffer fb_create_gbuffer(int width, int height, GLuint depth_tex) {
-    check_float_support();
-    Framebuffer fb = {0};
-    fb.width  = width;
-    fb.height = height;
-    fb.format = FB_RGBA16F;
-    fb.attachment_count = 4;
-
-    GLuint tex[4] = {0, 0, 0, 0};
-    glGenTextures(4, tex);
-    for (int i = 0; i < 4; ++i) {
-        glBindTexture(GL_TEXTURE_2D, tex[i]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0,
-                     GL_RGBA, GL_HALF_FLOAT, NULL);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
-
-    fb.color  = tex[0];
-    fb.color1 = tex[1];
-    fb.color2 = tex[2];
-    fb.color3 = tex[3];
-
-    glGenFramebuffers(1, &fb.fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fb.fbo);
-
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex[0], 0);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, tex[1], 0);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, tex[2], 0);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, tex[3], 0);
-
-    if (depth_tex) {
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
-                               GL_TEXTURE_2D, depth_tex, 0);
-        fb.depth = 0;   /* do not own */
-    } else {
-        glGenRenderbuffers(1, &fb.depth);
-        glBindRenderbuffer(GL_RENDERBUFFER, fb.depth);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
-                                  GL_RENDERBUFFER, fb.depth);
-    }
-
-    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (status != GL_FRAMEBUFFER_COMPLETE) {
-        fprintf(stderr, "[gbuffer] incomplete framebuffer (0x%04X) %dx%d\n",
-                status, width, height);
-        abort();
-    }
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glBindRenderbuffer(GL_RENDERBUFFER, 0);
-
-    printf("[gbuffer] created %dx%d att0=%u att1=%u att2=%u att3=%u depth=%s\n",
-           width, height, tex[0], tex[1], tex[2], tex[3],
-           depth_tex ? "borrowed" : "owned");
-    return fb;
 }
