@@ -319,6 +319,9 @@ vec3 game_wingtip_left(void)  { return g_wingtip_left_world; }
 vec3 game_wingtip_right(void) { return g_wingtip_right_world; }
 
 vec3  game_jet_position(void)  { return g_jet.position; }
+vec3  game_jet_forward(void)   { return g_jet.forward; }
+float game_jet_speed(void)    { return g_jet.speed; }
+float game_jet_throttle(void) { return g_jet.speed / g_jet.max_speed; }
 vec3  game_jet_right(void)     { return g_jet.right; }
 vec3  game_jet_up(void)        { return g_jet.up; }
 
@@ -360,9 +363,25 @@ void game_render(int w, int h) {
     GLint u_has_mr           = glGetUniformLocation(prog, "uHasMR");
     GLint u_has_normal       = glGetUniformLocation(prog, "uHasNormal");
 
+    {
+        static int dbg = 0;
+        if (dbg++ % 60 == 0) {
+            printf("[game_render] prog=%u count=%d placement=[%.2f %.2f %.2f]\n",
+                   prog, g_jet_model.count,
+                   placement.m[12], placement.m[13], placement.m[14]);
+        }
+    }
     for (int i = 0; i < g_jet_model.count; ++i) {
         Mesh* m = &g_jet_model.meshes[i];
         mat4 world = m->model;
+        if (i == 0) {
+            static int dbg2 = 0;
+            if (dbg2++ % 60 == 0) {
+                printf("[game_render] mesh0: vao=%u count=%u world=[%.2f %.2f %.2f]\n",
+                       m->vao, m->index_count & 0x7FFFFFFF,
+                       world.m[12], world.m[13], world.m[14]);
+            }
+        }
 
         float nrm[9];
         m4_to_mat3_normal(world, nrm);

@@ -19,11 +19,15 @@
 #include "bloom.h"
 #include "hdr_env.h"
 #include "trail.h"
+#include "hud.h"
 #include "game.h"
 
 #define CAR_PATH "/assets/model.glb"
 
 static GLuint prog;
+
+static int g_mouse_firing = 0;
+void game_set_firing(int firing) { g_mouse_firing = firing; }
 
 static Trail* g_trail_left  = NULL;
 static Trail* g_trail_right = NULL;
@@ -701,6 +705,17 @@ static void frame(void) {
     t_prev = t;
 
     game_update(dt);
+
+    /* HUD: read the aircraft state from game.c. */
+    {
+        float internal_speed = game_jet_speed();
+        float altitude       = game_jet_position().y;
+        float throttle       = game_jet_throttle();
+        float spd_kts = internal_speed * 1.944f;
+        float alt_ft  = altitude * 3.281f;
+        float mach    = internal_speed / 340.0f;
+        hud_update(spd_kts, alt_ft, mach, throttle, 6, 0, 0);
+    }
     game_update_wingtips();
     if (g_trails_initialized) {
         /* Push every 6th frame. The ring buffer holds 256 points, so
@@ -725,6 +740,15 @@ static void frame(void) {
 
     vec3 cam = game_ready() ? game_camera_pos() : v3(0.0f, 1.5f, 4.0f);
     vec3 cam_target = game_ready() ? game_camera_target() : v3(0.0f, 0.0f, 0.0f);
+    {
+        static int dbg_cam = 0;
+        if (dbg_cam++ % 30 == 0) {
+            vec3 jp = game_jet_position();
+            printf("[cam] pos=(%.1f,%.1f,%.1f) target=(%.1f,%.1f,%.1f) jet=(%.1f,%.1f,%.1f)\n",
+                   cam.x, cam.y, cam.z, cam_target.x, cam_target.y, cam_target.z,
+                   jp.x, jp.y, jp.z);
+        }
+    }
     vec3 light_dir = v3_norm(v3(-0.4f, -1.0f, -0.5f));
     vec3 light_color = v3(1.0f, 0.98f, 0.95f);
     float light_intensity = 3.0f;

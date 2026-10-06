@@ -7,9 +7,180 @@
     html, body { margin: 0; height: 100%; background: #111; overflow: hidden; }
     canvas { display: block; width: 100vw; height: 100vh; }
   </style>
+
+    <style>
+    html, body { margin: 0; padding: 0; overflow: hidden; background: #000; }
+
+    #canvas {
+        position: absolute;
+        top: 0; left: 0;
+        width: 100vw; height: 100vh;
+        display: block;
+    }
+
+    #hud {
+        position: absolute;
+        top: 0; left: 0;
+        width: 100vw; height: 100vh;
+        pointer-events: none;
+        font-family: 'Courier New', monospace;
+        color: #7fff8a;
+        text-shadow: 0 0 4px rgba(0, 255, 100, 0.6);
+        user-select: none;
+        z-index: 10;
+    }
+
+    /* Crosshair */
+    #crosshair {
+        position: absolute;
+        top: 50%; left: 50%;
+        transform: translate(-50%, -50%);
+        width: 80px; height: 80px;
+    }
+    .ch-line {
+        position: absolute;
+        background: #7fff8a;
+        opacity: 0.85;
+    }
+    .ch-h {
+        top: 50%; left: 0;
+        width: 100%; height: 1px;
+        transform: translateY(-0.5px);
+    }
+    .ch-v {
+        top: 0; left: 50%;
+        width: 1px; height: 100%;
+        transform: translateX(-0.5px);
+    }
+    .ch-box {
+        position: absolute;
+        top: 50%; left: 50%;
+        width: 14px; height: 14px;
+        margin-left: -7px; margin-top: -7px;
+        border: 1px solid #7fff8a;
+        opacity: 0.9;
+    }
+
+    /* Readouts */
+    #readouts {
+        position: absolute;
+        left: 24px; bottom: 24px;
+        font-size: 16px;
+        line-height: 1.5;
+    }
+    .readout-row { display: flex; align-items: baseline; gap: 8px; }
+    .readout-row .label { width: 52px; opacity: 0.7; font-size: 13px; }
+    .readout-row .value { width: 70px; text-align: right; font-size: 20px; font-weight: bold; }
+    .readout-row .unit  { opacity: 0.6; font-size: 12px; }
+
+    /* Throttle */
+    #throttle-bar {
+        position: absolute;
+        left: 24px; bottom: 130px;
+        width: 200px; height: 14px;
+        border: 1px solid #7fff8a;
+        opacity: 0.85;
+    }
+    #throttle-fill {
+        position: absolute;
+        top: 0; left: 0;
+        height: 100%;
+        width: 50%;
+        background: #7fff8a;
+        opacity: 0.55;
+    }
+    .throttle-label {
+        position: absolute;
+        top: -18px; left: 0;
+        font-size: 12px;
+        opacity: 0.7;
+    }
+
+    /* Weapons */
+    #weapons {
+        position: absolute;
+        right: 24px; bottom: 24px;
+        text-align: right;
+        font-size: 16px;
+        line-height: 1.5;
+    }
+    .weapon-row { display: flex; align-items: baseline; justify-content: flex-end; gap: 8px; }
+    .weapon-row .label { opacity: 0.7; font-size: 13px; }
+    .weapon-row .value { font-size: 20px; font-weight: bold; width: 40px; text-align: right; }
+
+    /* Warnings */
+    #warnings {
+        position: absolute;
+        top: 15%; left: 50%;
+        transform: translateX(-50%);
+        text-align: center;
+    }
+    .warn {
+        font-size: 32px;
+        font-weight: bold;
+        letter-spacing: 4px;
+        color: #ff3030;
+        text-shadow: 0 0 8px rgba(255, 0, 0, 0.8);
+        animation: blink 0.6s steps(2) infinite;
+        margin: 8px 0;
+    }
+    .warn.hidden { display: none; }
+    @keyframes blink {
+        0% { opacity: 1; }
+        50% { opacity: 0.3; }
+        100% { opacity: 1; }
+    }
+    </style>
+
 </head>
 <body>
   <canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas>
+    <div id="hud">
+        <div id="crosshair">
+            <div class="ch-line ch-h"></div>
+            <div class="ch-line ch-v"></div>
+            <div class="ch-box"></div>
+        </div>
+
+        <div id="readouts">
+            <div class="readout-row">
+                <span class="label">SPD</span>
+                <span class="value" id="hud-speed">000</span>
+                <span class="unit">KTS</span>
+            </div>
+            <div class="readout-row">
+                <span class="label">ALT</span>
+                <span class="value" id="hud-alt">0000</span>
+                <span class="unit">FT</span>
+            </div>
+            <div class="readout-row">
+                <span class="label">MACH</span>
+                <span class="value" id="hud-mach">0.00</span>
+            </div>
+        </div>
+
+        <div id="throttle-bar">
+            <div id="throttle-fill"></div>
+            <div class="throttle-label">THR</div>
+        </div>
+
+        <div id="weapons">
+            <div class="weapon-row">
+                <span class="label">GUN</span>
+                <span class="value" id="hud-gun">∞</span>
+            </div>
+            <div class="weapon-row">
+                <span class="label">MSL</span>
+                <span class="value" id="hud-msl">6</span>
+            </div>
+        </div>
+
+        <div id="warnings">
+            <div id="warn-lock" class="warn hidden">LOCK</div>
+            <div id="warn-missile" class="warn hidden">MISSILE</div>
+        </div>
+    </div>
+
   <script>
     var Module = {
       canvas: (function() { return document.getElementById('canvas'); })(),

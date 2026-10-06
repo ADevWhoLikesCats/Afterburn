@@ -116,6 +116,13 @@ static vec3 trail_get(const Trail* t, int i) {
 
 void trail_render(Trail* t, mat4 viewproj, vec3 cam_pos, float opacity) {
     {
+        static int dbg = 0;
+        if (dbg++ % 60 == 0) {
+            printf("[trail_render] count=%d prog=%u opacity=%.3f\n",
+                   t->count, t->prog, opacity);
+        }
+    }
+    {
         static int rr = 0;
         if (rr++ < 3) printf("[render] t=%p prog=%u count=%d\n",
                              (void*)t, t->prog, t->count);

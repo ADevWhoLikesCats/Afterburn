@@ -1,0 +1,202 @@
+#include "gun.h"
+#include "asset.h"
+#include <GLES3/gl3.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static GLuint g_prog = 0;
+static GLint  u_viewproj = -1;
+static GLuint g_vao = 0;
+static GLuint g_vbo = 0;
+
+static GLuint load_shader(GLenum type, const char* path) {
+    size_t len = 0;
+    char* src = asset_load(path, &len);
+    if (!src) { fprintf(stderr, "gun: cannot load %s\n", path); abort(); }
+    GLuint s = glCreateShader(type);
+    glShaderSource(s, 1, (const GLchar* const*)&src, NULL);
+    glCompileShader(s);
+    GLint ok = 0;
+    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        char log[2048];
+        glGetShaderInfoLog(s, sizeof(log), NULL, log);
+        fprintf(stderr, "gun: compile failed [%s]:\n%s\n", path, log);
+        abort();
+    }
+    free(src);
+    return s;
+}
+
+static GLuint link_prog(GLuint vs, GLuint fs) {
+    GLuint p = glCreateProgram();
+    glAttachShader(p, vs);
+    glAttachShader(p, fs);
+    glLinkProgram(p);
+    GLint ok = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[2048];
+        glGetProgramInfoLog(p, sizeof(log), NULL, log);
+        fprintf(stderr, "gun: link failed:\n%s\n", log);
+        abort();
+    }
+    return p;
+}
+
+void gun_init(Gun* g) {
+    memset(g, 0, sizeof(*g));
+
+    if (!g_prog) {
+        GLuint vs = load_shader(GL_VERTEX_SHADER,   "/shaders/gun.vert");
+        GLuint fs = load_shader(GL_FRAGMENT_SHADER, "/shaders/gun.frag");
+        g_prog = link_prog(vs, fs);
+        glDeleteShader(vs);
+        glDeleteShader(fs);
+        u_viewproj = glGetUniformLocation(g_prog, "uViewProj");
+    }
+
+    if (!g_vao) {
+        glGenVertexArrays(1, &g_vao);
+        glGenBuffers(1, &g_vbo);
+        glBindVertexArray(g_vao);
+        glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+}
+
+void gun_shutdown(Gun* g) {
+    (void)g;
+    if (g_vbo) { glDeleteBuffers(1, &g_vbo); g_vbo = 0; }
+    if (g_vao) { glDeleteVertexArrays(1, &g_vao); g_vao = 0; }
+    if (g_prog) { glDeleteProgram(g_prog); g_prog = 0; }
+}
+
+void gun_update(Gun* g, float dt, vec3 origin, vec3 forward, int fire_input) {
+    g->firing = fire_input;
+
+    g->fire_cooldown -= dt;
+    if (g->fire_cooldown < 0.0f) g->fire_cooldown = 0.0f;
+
+    if (fire_input && g->fire_cooldown <= 0.0f) {
+        for (int i = 0; i < GUN_MAX_BULLETS; ++i) {
+            if (!g->bullets[i].active) {
+                Bullet* b = &g->bullets[i];
+                b->active   = 1;
+                b->age      = 0.0f;
+                b->position = v3_add(origin, v3_scale(forward, 1.5f));
+                b->velocity = v3_scale(forward, GUN_BULLET_SPEED);
+                break;
+            }
+        }
+        g->fire_cooldown = GUN_FIRE_INTERVAL;
+        g->muzzle_timer  = GUN_MUZZLE_LIFE;
+        g->muzzle_pos    = v3_add(origin, v3_scale(forward, 1.4f));
+    }
+
+    for (int i = 0; i < GUN_MAX_BULLETS; ++i) {
+        Bullet* b = &g->bullets[i];
+        if (!b->active) continue;
+        b->age += dt;
+        b->position = v3_add(b->position, v3_scale(b->velocity, dt));
+        if (b->age >= GUN_BULLET_LIFE) b->active = 0;
+    }
+
+    if (g->muzzle_timer > 0.0f) {
+        g->muzzle_timer -= dt;
+        if (g->muzzle_timer < 0.0f) g->muzzle_timer = 0.0f;
+    }
+}
+
+void gun_render(Gun* g, mat4 viewproj, vec3 cam) {
+    if (!g_prog) return;
+
+    /* Build the vertex buffer: 6 vertices per bullet (two triangles),
+       3 floats each. */
+    static float verts[GUN_MAX_BULLETS * 6 * 3];
+    int v_count = 0;
+
+    for (int i = 0; i < GUN_MAX_BULLETS; ++i) {
+        Bullet* b = &g->bullets[i];
+        if (!b->active) continue;
+
+        vec3 dir = v3_norm(b->velocity);
+        vec3 to_cam = v3_sub(cam, b->position);
+        vec3 right = v3_cross(dir, to_cam);
+        float rl = v3_len(right);
+        if (rl < 1e-4f) continue;
+        right = v3_scale(right, 1.0f / rl);
+
+        vec3 tail = b->position;
+        vec3 head = v3_add(b->position, v3_scale(dir, GUN_BULLET_LEN));
+        float w = 0.05f;
+
+        vec3 a = v3_add(tail, v3_scale(right, -w));
+        vec3 c = v3_add(tail, v3_scale(right,  w));
+        vec3 d = v3_add(head, v3_scale(right,  w));
+        vec3 e = v3_add(head, v3_scale(right, -w));
+
+        /* tri 1: a, c, d */
+        verts[v_count*3+0]=a.x; verts[v_count*3+1]=a.y; verts[v_count*3+2]=a.z; v_count++;
+        verts[v_count*3+0]=c.x; verts[v_count*3+1]=c.y; verts[v_count*3+2]=c.z; v_count++;
+        verts[v_count*3+0]=d.x; verts[v_count*3+1]=d.y; verts[v_count*3+2]=d.z; v_count++;
+        /* tri 2: a, d, e */
+        verts[v_count*3+0]=a.x; verts[v_count*3+1]=a.y; verts[v_count*3+2]=a.z; v_count++;
+        verts[v_count*3+0]=d.x; verts[v_count*3+1]=d.y; verts[v_count*3+2]=d.z; v_count++;
+        verts[v_count*3+0]=e.x; verts[v_count*3+1]=e.y; verts[v_count*3+2]=e.z; v_count++;
+    }
+
+    /* Muzzle flash quad */
+    int flash_first = v_count;
+    if (g->muzzle_timer > 0.0f) {
+        vec3 m = g->muzzle_pos;
+        vec3 to_cam = v3_norm(v3_sub(cam, m));
+        vec3 up_world = v3(0, 1, 0);
+        if (fabsf(v3_dot(to_cam, up_world)) > 0.99f) up_world = v3(1, 0, 0);
+        vec3 right = v3_norm(v3_cross(up_world, to_cam));
+        vec3 up    = v3_cross(to_cam, right);
+        float s = 0.3f * (g->muzzle_timer / GUN_MUZZLE_LIFE) + 0.1f;
+
+        vec3 a = v3_add(m, v3_add(v3_scale(right, -s), v3_scale(up, -s)));
+        vec3 b = v3_add(m, v3_add(v3_scale(right,  s), v3_scale(up, -s)));
+        vec3 c = v3_add(m, v3_add(v3_scale(right,  s), v3_scale(up,  s)));
+        vec3 d = v3_add(m, v3_add(v3_scale(right, -s), v3_scale(up,  s)));
+
+        verts[v_count*3+0]=a.x; verts[v_count*3+1]=a.y; verts[v_count*3+2]=a.z; v_count++;
+        verts[v_count*3+0]=b.x; verts[v_count*3+1]=b.y; verts[v_count*3+2]=b.z; v_count++;
+        verts[v_count*3+0]=c.x; verts[v_count*3+1]=c.y; verts[v_count*3+2]=c.z; v_count++;
+        verts[v_count*3+0]=a.x; verts[v_count*3+1]=a.y; verts[v_count*3+2]=a.z; v_count++;
+        verts[v_count*3+0]=c.x; verts[v_count*3+1]=c.y; verts[v_count*3+2]=c.z; v_count++;
+        verts[v_count*3+0]=d.x; verts[v_count*3+1]=d.y; verts[v_count*3+2]=d.z; v_count++;
+    }
+
+    if (v_count == 0) return;
+
+    glUseProgram(g_prog);
+    glUniformMatrix4fv(u_viewproj, 1, GL_FALSE, viewproj.m);
+
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glDisable(GL_CULL_FACE);
+
+    glBindVertexArray(g_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 3 * v_count,
+                 verts, GL_DYNAMIC_DRAW);
+    glDrawArrays(GL_TRIANGLES, 0, v_count);
+    (void)flash_first;
+
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glUseProgram(0);
+    glEnable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+    glDepthMask(GL_TRUE);
+    glEnable(GL_DEPTH_TEST);
+}

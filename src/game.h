@@ -31,4 +31,9 @@ void game_update_wingtips(void);
 vec3 game_wingtip_left(void);
 vec3 game_wingtip_right(void);
 
+float game_jet_speed(void);
+float game_jet_throttle(void);
+
+vec3 game_jet_forward(void);
+
 #endif
