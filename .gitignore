@@ -41,3 +41,5 @@ npm-debug.log*
 # Python bytecode (for any tools/ scripts)
 __pycache__/
 *.pyc
+bgfx_smoke
+bgfx_smoke.o
